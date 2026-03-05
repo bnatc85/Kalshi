@@ -1,19 +1,22 @@
 {
-  "name": "syntharb-bot",
+  "name": "signal-bonbon",
   "version": "2.0.0",
-  "description": "Synthetic arbitrage bot for Polymarket & Kalshi — IRR-aware convergence trading",
+  "description": "Signal BonBon — Kalshi divergence trading bot using Polymarket as a price signal",
   "type": "module",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dry": "node src/index.js --dry-run",
-    "test-connection": "node src/test-connection.js",
-    "scan": "node src/scanner.js"
+    "start": "node index.js",
+    "dry": "node index.js --dry-run",
+    "test-connection": "node test-connection.js",
+    "scan": "node scanner.js",
+    "dashboard": "node dashboard.js",
+    "discover": "node discover.js"
   },
   "dependencies": {
-    "pmxtjs": "latest",
+    "chalk": "^5.3.0",
     "dotenv": "^16.0.0",
-    "chalk": "^5.3.0"
+    "express": "^5.2.1",
+    "pmxtjs": "latest"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,32 +1,31 @@
 /**
  * Main bot loop.
- * Polls all configured markets, detects spreads, manages positions.
+ * Polls configured markets, detects Kalshi vs Polymarket divergence,
+ * trades on Kalshi only using Polymarket as a price signal.
  */
 
 import { config } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
-import { findArbitrageOpportunity, shouldExitPosition } from './arbitrage.js';
-import { setClients, enterPosition, exitPosition } from './executor.js';
+import { findDivergence, shouldExitPosition } from './arbitrage.js';
+import { enterPosition, exitPosition } from './executor.js';
 
-const positions = [];   // open positions
-const closedPnl = [];   // history
+const positions = [];
+const closedPnl = [];
 
 export async function startBot() {
-  console.log('\n════════════════════════════════════════');
-  console.log('  SynthArb Bot v2 — IRR-Aware Convergence');
-  console.log('════════════════════════════════════════');
-  console.log(`Mode:          ${config.dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}`);
-  console.log(`Poll interval: ${config.pollIntervalSeconds}s`);
-  console.log(`Min spread:    ${config.minSpreadBps} bps`);
-  console.log(`Min IRR:       ${config.minIRR}%`);
-  console.log(`Position size: $${config.positionSizeUSD}`);
-  console.log(`Max positions: ${config.maxOpenPositions}`);
-  console.log(`Markets:       ${config.markets.length}\n`);
+  console.log('\n========================================');
+  console.log('  Signal BonBon — Kalshi-Only Divergence Bot');
+  console.log('========================================');
+  console.log(`Mode:           ${config.dryRun ? 'DRY RUN' : 'LIVE'}`);
+  console.log(`Poll interval:  ${config.pollIntervalSeconds}s`);
+  console.log(`Min divergence: ${config.minDivergenceBps} bps`);
+  console.log(`Min IRR:        ${config.minIRR}%`);
+  console.log(`Position size:  $${config.positionSizeUSD}`);
+  console.log(`Max positions:  ${config.maxOpenPositions}`);
+  console.log(`Markets:        ${config.markets.length}\n`);
 
-  const { kalshiClient, polyClient } = initClients();
-  setClients(kalshiClient, polyClient);
+  initClients();
 
-  // Poll loop
   while (true) {
     await poll();
     await sleep(config.pollIntervalSeconds * 1000);
@@ -35,105 +34,94 @@ export async function startBot() {
 
 async function poll() {
   const timestamp = new Date().toLocaleTimeString();
-  console.log(`\n─── ${timestamp} ─────────────────────────────`);
+  console.log(`\n--- ${timestamp} ---`);
 
   // 1. Fetch all market prices in parallel
   const snapshots = await Promise.all(
     config.markets.map(m => fetchMarketPrices(m))
   );
 
-  // 2. Compute opportunities
-  const opportunities = [];
+  // 2. Compute divergences
+  const signals = [];
   for (let i = 0; i < snapshots.length; i++) {
-    const snap   = snapshots[i];
+    const snap = snapshots[i];
     const market = config.markets[i];
 
-    // Need at least Kalshi prices
-    if (snap.kalshiYes === null || snap.kalshiNo === null) {
-      console.log(`[scan] ${market.label}: ⚠ No Kalshi price`);
+    if (snap.kalshiPrice === null || snap.polyPrice === null) {
+      console.log(`[scan]    ${market.label}: Missing prices (K=${snap.kalshiPrice} P=${snap.polyPrice})`);
       continue;
     }
 
-    // If no Polymarket, estimate poly from kalshi with small synthetic spread
-    // (Kalshi-only mode — arb logic still tracks internal convergence)
-    const polyYes = snap.polyYes ?? snap.kalshiYes * (1 + (Math.random() - 0.5) * 0.03);
+    const sig = findDivergence(snap.polyPrice, snap.kalshiPrice, snap.kalshiSide, snap.daysToExpiry);
+    sig.marketLabel = market.label;
+    sig.marketIndex = i;
 
-    const opp = findArbitrageOpportunity(polyYes, snap.kalshiYes, snap.daysToExpiry);
-    opp.marketLabel = market.label;
-    opp.marketIndex = i;
-    opp.snapshot    = snap;
-
-    const marker = opp.spreadBps >= config.minSpreadBps && opp.irr >= config.minIRR ? '🟢' : '⚪';
+    const meets = sig.divergenceBps >= config.minDivergenceBps && sig.irr >= config.minIRR;
+    const marker = meets ? '>>' : '  ';
     console.log(
-      `[scan] ${marker} ${market.label.padEnd(25)} ` +
-      `spread=${opp.spreadBps.toFixed(0).padStart(4)}bps  ` +
-      `IRR=${opp.irr.toFixed(0).padStart(4)}%  ` +
-      `cost=${(opp.cost * 100).toFixed(1)}¢  ` +
-      `${snap.daysToExpiry}d`
+      `[scan] ${marker} ${market.label.padEnd(28)} ` +
+      `K=${(snap.kalshiPrice * 100).toFixed(1)}c  P=${(snap.polyPrice * 100).toFixed(1)}c  ` +
+      `div=${sig.divergenceBps.toFixed(0)}bps  IRR=${sig.irr.toFixed(0)}%  ` +
+      `-> BUY ${sig.tradeSide.toUpperCase()} @ ${(sig.entryPrice * 100).toFixed(1)}c  ${snap.daysToExpiry}d`
     );
 
-    if (opp.spreadBps >= config.minSpreadBps && opp.irr >= config.minIRR) {
-      opportunities.push({ ...opp, market });
-    }
+    if (meets) signals.push({ ...sig, market });
   }
 
-  opportunities.sort((a, b) => b.irr - a.irr);  // rank by IRR, not raw spread
+  signals.sort((a, b) => b.irr - a.irr);
 
   // 3. Check exits for open positions
   for (let i = positions.length - 1; i >= 0; i--) {
-    const pos    = positions[i];
-    const snap   = snapshots[pos.marketIndex];
-    const polyYes = snap.polyYes ?? snap.kalshiYes;
-    const current = findArbitrageOpportunity(polyYes, snap.kalshiYes, snap.daysToExpiry);
+    const pos = positions[i];
+    const snap = snapshots[pos.marketIndex];
+    if (!snap || snap.kalshiPrice === null || snap.polyPrice === null) continue;
+
+    const current = findDivergence(snap.polyPrice, snap.kalshiPrice, snap.kalshiSide, snap.daysToExpiry);
 
     const { shouldExit, reason } = shouldExitPosition(
-      pos,
-      current.spread,
-      current.irr,
-      opportunities,
-      {
-        exitOnIRRDrop:     true,
-        exitIRRThreshold:  config.minIRR * 0.5,
-        rotateForBetter:   true,
-        minSpreadBps:      config.minSpreadBps,
-      }
+      pos, current.divergenceBps, current.divergence, current.irr,
+      config.exitConvergenceBps, config.minIRR
     );
 
     if (shouldExit) {
-      pos.exitReason  = reason;
-      pos.exitSpread  = current.spread;
-      pos.exitTime    = new Date().toISOString();
-      const pnl       = (pos.entrySpread - current.spread) * pos.shares;
-      pos.realizedPnl = pnl;
+      pos.exitReason = reason;
+      pos.exitTime = new Date().toISOString();
+      // Estimate PnL: current price of our side minus what we paid
+      const currentPrice = pos.tradeSide === 'yes'
+        ? snap.kalshiYes
+        : snap.kalshiNo;
+      pos.realizedPnl = (currentPrice - pos.entryPrice) * pos.contracts;
 
       await exitPosition(pos, config.markets[pos.marketIndex]);
       closedPnl.push(pos);
       positions.splice(i, 1);
 
-      console.log(`[exit] ${pos.market.label} | ${reason} | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+      console.log(`[exit] ${pos.marketLabel} | ${reason} | PnL: ${pos.realizedPnl >= 0 ? '+' : ''}$${pos.realizedPnl.toFixed(2)}`);
     }
   }
 
   // 4. Enter new positions
-  for (const opp of opportunities) {
+  for (const sig of signals) {
     if (positions.length >= config.maxOpenPositions) break;
-    const alreadyOpen = positions.some(p => p.marketLabel === opp.marketLabel);
+    const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
     if (alreadyOpen) continue;
 
-    const shares = config.positionSizeUSD / opp.cost;
-    const result = await enterPosition(opp, opp.market, shares);
+    const contracts = Math.floor(config.positionSizeUSD / sig.entryPrice);
+    if (contracts < 1) continue;
+
+    const result = await enterPosition(sig, sig.market, contracts);
 
     if (result.success) {
       positions.push({
-        marketLabel: opp.marketLabel,
-        marketIndex: opp.marketIndex,
-        market:      opp.market,
-        legs:        opp.legs,
-        entrySpread: opp.spread,
-        entryIRR:    opp.irr,
-        entryCost:   opp.cost,
-        shares,
-        entryTime:   new Date().toISOString(),
+        marketLabel: sig.marketLabel,
+        marketIndex: sig.marketIndex,
+        tradeSide: sig.tradeSide,
+        entryPrice: sig.entryPrice,
+        entryDivergence: sig.divergence,
+        entryDivergenceBps: sig.divergenceBps,
+        entryIRR: sig.irr,
+        contracts,
+        entryTime: new Date().toISOString(),
       });
     }
   }

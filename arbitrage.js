@@ -1,81 +1,80 @@
 /**
- * Core arbitrage math — no API calls here, pure calculation.
- * Used by both the bot and the scanner.
+ * Core signal math — no API calls here, pure calculation.
+ *
+ * Strategy: Use Polymarket price as a "fair value" signal.
+ * When Kalshi diverges from Polymarket, trade on Kalshi
+ * in the direction of convergence.
  */
 
 /**
- * Given live prices from both platforms for the same outcome,
- * compute the best synthetic arb opportunity (if any).
+ * Given normalized prices (already adjusted for compareMode by fetcher),
+ * compute the divergence and recommended Kalshi trade.
  *
- * Strategy A: Buy YES on Poly + Buy NO on Kalshi
- * Strategy B: Buy YES on Kalshi + Buy NO on Poly
- *
- * Returns null if no profitable spread exists.
+ * If polyPrice > kalshiPrice → Kalshi is underpriced → BUY on Kalshi
+ * If polyPrice < kalshiPrice → Kalshi is overpriced → SELL (or buy the other side)
  */
-export function findArbitrageOpportunity(polyYes, kalshiYes, daysToExpiry) {
-  const polyNo   = 1 - polyYes;
-  const kalshiNo = 1 - kalshiYes;
+export function findDivergence(polyPrice, kalshiPrice, kalshiSide, daysToExpiry) {
+  const divergence = polyPrice - kalshiPrice;          // positive = Kalshi is cheap
+  const absDivergence = Math.abs(divergence);
+  const divergenceBps = absDivergence * 10000;
 
-  const costA = polyYes + kalshiNo;   // YES on Poly, NO on Kalshi
-  const costB = kalshiYes + polyNo;   // YES on Kalshi, NO on Poly
+  // Trade direction: if Kalshi is cheap, buy the kalshiSide
+  // If Kalshi is expensive, buy the opposite side
+  let tradeSide, entryPrice;
+  if (divergence > 0) {
+    // Kalshi is cheap — buy this side
+    tradeSide = kalshiSide;
+    entryPrice = kalshiPrice;
+  } else {
+    // Kalshi is expensive — buy the other side
+    tradeSide = kalshiSide === 'yes' ? 'no' : 'yes';
+    entryPrice = 1 - kalshiPrice;
+  }
 
-  const bestCost     = Math.min(costA, costB);
-  const strategy     = costA <= costB ? 'A' : 'B';
-  const spread       = 1 - bestCost;
-  const spreadBps    = spread * 10000;
-  const irr          = calcAnnualizedIRR(spread, bestCost, daysToExpiry);
+  const expectedProfit = absDivergence;
+  const irr = calcAnnualizedIRR(expectedProfit, entryPrice, daysToExpiry);
 
   return {
-    strategy,       // 'A' or 'B'
-    cost: bestCost, // combined cost of both legs
-    spread,         // gross profit per dollar
-    spreadBps,
-    irr,            // annualized return
-    costA,
-    costB,
-    // Describe the legs
-    legs: strategy === 'A'
-      ? { yesPlatform: 'polymarket', noPlatform: 'kalshi', yesPrice: polyYes,   noPrice: kalshiNo }
-      : { yesPlatform: 'kalshi',     noPlatform: 'polymarket', yesPrice: kalshiYes, noPrice: polyNo },
+    tradeSide,          // 'yes' or 'no' — what to buy on Kalshi
+    entryPrice,         // price of the side we're buying
+    divergence,         // raw divergence (signed, positive = Kalshi cheap)
+    divergenceBps,      // absolute divergence in bps
+    expectedProfit,     // expected profit per contract if prices converge
+    irr,                // annualized return
+    polyPrice,
+    kalshiPrice,
+    kalshiSide,
+    daysToExpiry,
   };
 }
 
 /**
- * Annualized IRR = (profit/cost) × (365/daysToExpiry)
- * This is the key metric — a tight spread with few days remaining
- * can massively outrank a large spread with months to go.
+ * Annualized IRR = (profit / cost) * (365 / daysToExpiry) * 100
  */
-export function calcAnnualizedIRR(spread, cost, daysToExpiry) {
+export function calcAnnualizedIRR(profit, cost, daysToExpiry) {
   if (daysToExpiry <= 0 || cost <= 0) return 0;
-  return (spread / cost) * (365 / daysToExpiry) * 100;
+  return (profit / cost) * (365 / daysToExpiry) * 100;
 }
 
 /**
  * Decide whether to exit an open position.
- * Returns { shouldExit, reason } 
  */
-export function shouldExitPosition(position, currentSpread, currentIRR, allOpportunities, config) {
-  // 1. Spread has closed — take profit
-  if (currentSpread < 0.003) {
+export function shouldExitPosition(position, currentDivergenceBps, currentDivergence, currentIRR, exitConvergenceBps, minIRR) {
+  // 1. Spread has converged — take profit
+  if (currentDivergenceBps < exitConvergenceBps) {
     return { shouldExit: true, reason: 'CONVERGED' };
   }
 
-  // 2. IRR dropped below threshold — redeploy capital
-  if (config.exitOnIRRDrop && currentIRR < config.exitIRRThreshold) {
-    return { shouldExit: true, reason: 'IRR_DROP' };
+  // 2. Divergence flipped against us
+  const wasKalshiCheap = position.entryDivergence > 0;
+  const nowFlipped = wasKalshiCheap ? currentDivergence < -0.01 : currentDivergence > 0.01;
+  if (nowFlipped) {
+    return { shouldExit: true, reason: 'FLIPPED' };
   }
 
-  // 3. Rotate — a much better opportunity exists elsewhere
-  if (config.rotateForBetter) {
-    const betterExists = allOpportunities.some(
-      o => o.marketLabel !== position.marketLabel &&
-           o.spreadBps >= config.minSpreadBps * 1.8 &&
-           o.irr > position.entryIRR * 1.5
-    );
-    const spreadHalfClosed = currentSpread < position.entrySpread * 0.45;
-    if (betterExists && spreadHalfClosed) {
-      return { shouldExit: true, reason: 'ROTATE' };
-    }
+  // 3. IRR too low — capital better used elsewhere
+  if (currentIRR < minIRR * 0.5) {
+    return { shouldExit: true, reason: 'IRR_DROP' };
   }
 
   return { shouldExit: false, reason: null };
