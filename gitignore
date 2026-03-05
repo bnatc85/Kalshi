@@ -1,0 +1,16 @@
+# NEVER commit these
+.env
+*.pem
+*.key
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
