@@ -149,21 +149,20 @@ async function poll() {
     }
   }
 
+  // Fetch open sell orders once — used by both auto-sell (3b) and buy (4)
+  let openSellTickers = new Set();
+  try {
+    const openOrders = await getKalshiClient().fetchOpenOrders();
+    for (const o of openOrders) {
+      if (o.side === 'sell') openSellTickers.add(o.marketId);
+    }
+  } catch (e) {
+    console.warn(`[orders] Could not fetch open orders: ${e.message}`);
+  }
+
   // 3b. Auto-sell: check real Kalshi positions, sell if bid > entry price
   try {
     const livePositions = await getKalshiClient().fetchPositions();
-
-    // Fetch open orders to skip positions that already have pending sells
-    let openSellTickers = new Set();
-    try {
-      const openOrders = await getKalshiClient().fetchOpenOrders();
-      for (const o of openOrders) {
-        if (o.side === 'sell') openSellTickers.add(o.marketId);
-      }
-    } catch (e) {
-      // If we can't fetch orders, proceed but log it
-      console.warn(`[auto-sell] Could not fetch open orders: ${e.message}`);
-    }
 
     for (const pos of livePositions) {
       if (pos.size <= 0) continue;
@@ -324,8 +323,10 @@ async function poll() {
     for (const p of livePositions) {
       if (p.size > 0) liveTickerSet.add(p.marketId);
     }
+    // Also block buys for tickers with pending sell orders
+    for (const t of openSellTickers) liveTickerSet.add(t);
     if (liveTickerSet.size > 0) {
-      console.log(`[positions] Already holding: ${[...liveTickerSet].join(', ')}`);
+      console.log(`[positions] Already holding/selling: ${[...liveTickerSet].join(', ')}`);
     }
   } catch (e) {
     console.warn(`[positions] Could not fetch live positions: ${e.message}`);
