@@ -297,14 +297,17 @@ async function poll() {
         continue;
       }
 
+      const orderParams = {
+        outcome,
+        side: 'sell',
+        type: 'limit',
+        amount: sellQty,
+        price: sellPrice,
+      };
+      console.log(`[auto-sell]   -> order params: ${JSON.stringify({ ticker, outcomeId: outcome?.outcomeId, outcomeLabel: outcome?.label, side: 'sell', amount: sellQty, price: sellPrice })}`);
+
       try {
-        const order = await getKalshiClient().createOrder({
-          outcome,
-          side: 'sell',
-          type: 'limit',
-          amount: sellQty,
-          price: sellPrice,
-        });
+        const order = await getKalshiClient().createOrder(orderParams);
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
         const pnl = entry ? (sellPrice - entry) * sellQty : null;
         if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
