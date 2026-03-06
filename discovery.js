@@ -58,20 +58,22 @@ function extractKeywords(text) {
  * Generic words like "rate", "price", "change" get filtered out.
  */
 const GENERIC_WORDS = new Set([
+  // Politics / economics
   'rate', 'rates', 'price', 'change', 'market', 'markets',
   'prime', 'minister', 'president', 'leader', 'election',
   'increase', 'decrease', 'cut', 'raise', 'meeting',
   'interest', 'federal', 'reserve', 'bps', 'basis', 'points',
   'supreme', 'government', 'party', 'vote', 'win', 'winner',
   'perform', 'song', 'theme', 'announced', 'become',
+  'deal', 'agreement', 'bill', 'act', 'law', 'policy',
+  'company', 'stock', 'shares', 'ceo', 'billion', 'million',
+  // Time words
   'first', 'second', 'third', 'year', 'month', 'day',
   'january', 'february', 'march', 'april', 'may', 'june',
   'july', 'august', 'september', 'october', 'november', 'december',
+  // Too broad
   'united', 'states', 'world', 'national', 'international',
-  'championship', 'season', 'game', 'series', 'round', 'final',
-  'cup', 'league', 'team', 'player', 'coach', 'manager',
-  'deal', 'agreement', 'bill', 'act', 'law', 'policy',
-  'company', 'stock', 'shares', 'ceo', 'billion', 'million',
+  'round', 'final', 'season', 'game',
 ]);
 
 function isSpecific(word) {
@@ -112,13 +114,26 @@ async function fetchKalshiMarkets() {
   const client = getKalshiClient();
   const seen = new Map();
 
-  // pmxt doesn't support cursor pagination well, so just fetch one big batch
-  // and deduplicate by marketId
-  const params = { limit: 200, status: 'open' };
-  const batch = await client.fetchMarkets(params);
-  for (const m of batch) {
-    const id = m.marketId || m.ticker;
-    if (id && !seen.has(id)) seen.set(id, m);
+  // Fetch multiple batches, deduplicate by marketId
+  // Use offset-based pagination since pmxt cursor support is unreliable
+  for (let offset = 0; offset < 2000; offset += 200) {
+    const params = { limit: 200, status: 'open', offset };
+    try {
+      const batch = await client.fetchMarkets(params);
+      if (!batch.length) break;
+      let newCount = 0;
+      for (const m of batch) {
+        const id = m.marketId || m.ticker;
+        if (id && !seen.has(id)) { seen.set(id, m); newCount++; }
+      }
+      console.log(`[discovery] Kalshi batch ${offset}: ${batch.length} fetched, ${newCount} new`);
+      // If no new markets, we've hit the end or are looping
+      if (newCount === 0) break;
+      await new Promise(r => setTimeout(r, 1500));
+    } catch (e) {
+      console.log(`[discovery] Kalshi fetch error at offset ${offset}: ${e.message}`);
+      break;
+    }
   }
 
   return [...seen.values()];
