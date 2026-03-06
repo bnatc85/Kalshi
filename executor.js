@@ -32,7 +32,7 @@ export async function enterPosition(signal, marketConfig, contracts) {
 
     if (!outcome) throw new Error(`Outcome "${side}" not found`);
 
-    const order = await client.createOrder({
+    const order = await getKalshiClient().createOrder({
       outcomeId: outcome.outcomeId,
       side: 'buy',
       type: 'market',
@@ -67,7 +67,7 @@ export async function exitPosition(position, marketConfig) {
 
     if (!outcome) throw new Error(`Outcome "${position.tradeSide}" not found`);
 
-    const order = await client.createOrder({
+    const order = await getKalshiClient().createOrder({
       outcomeId: outcome.outcomeId,
       side: 'sell',
       type: 'market',
