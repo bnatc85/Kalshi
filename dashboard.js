@@ -152,13 +152,13 @@ app.get('/api/candidates', (req, res) => {
   res.json(loadCandidates());
 });
 
-app.post('/api/candidates/:id/approve', (req, res) => {
-  const result = approveCandidate(req.params.id);
+app.post('/api/candidates/approve', (req, res) => {
+  const result = approveCandidate(req.body.id);
   res.json(result);
 });
 
-app.post('/api/candidates/:id/dismiss', (req, res) => {
-  const result = dismissCandidate(req.params.id);
+app.post('/api/candidates/dismiss', (req, res) => {
+  const result = dismissCandidate(req.body.id);
   res.json(result);
 });
 
@@ -547,6 +547,8 @@ async function loadHistory() {
 }
 
 // Discovery functions
+let _candidates = [];
+
 async function doDiscover() {
   const btn = document.getElementById('discoverBtn');
   const status = document.getElementById('discoverStatus');
@@ -557,7 +559,8 @@ async function doDiscover() {
     const resp = await fetch('/api/discover');
     const data = await resp.json();
     status.textContent = 'Found ' + data.pending + ' new candidates';
-    renderCandidates(data.candidates);
+    _candidates = data.candidates;
+    renderCandidates();
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
   } finally {
@@ -569,15 +572,15 @@ async function doDiscover() {
 async function loadCandidates() {
   try {
     const resp = await fetch('/api/candidates');
-    const data = await resp.json();
-    renderCandidates(data);
+    _candidates = await resp.json();
+    renderCandidates();
   } catch (e) {}
 }
 
-function renderCandidates(candidates) {
+function renderCandidates() {
   const grid = document.getElementById('candidateGrid');
-  const pending = candidates.filter(c => c.status === 'pending');
-  const approved = candidates.filter(c => c.status === 'approved');
+  const pending = _candidates.filter(c => c.status === 'pending');
+  const approved = _candidates.filter(c => c.status === 'approved');
 
   if (!pending.length && !approved.length) {
     grid.innerHTML = '<div class="empty">No candidates found yet</div>';
@@ -587,20 +590,20 @@ function renderCandidates(candidates) {
   let html = '';
   if (approved.length) {
     html += '<div style="font-size:12px;color:#3fb950;margin-bottom:8px;font-weight:600">APPROVED (' + approved.length + ')</div>';
-    for (const c of approved) {
-      html += renderCandidateCard(c);
+    for (let i = 0; i < _candidates.length; i++) {
+      if (_candidates[i].status === 'approved') html += renderCandidateCard(_candidates[i], i);
     }
   }
   if (pending.length) {
     html += '<div style="font-size:12px;color:#f0c000;margin:12px 0 8px;font-weight:600">PENDING REVIEW (' + pending.length + ')</div>';
-    for (const c of pending) {
-      html += renderCandidateCard(c);
+    for (let i = 0; i < _candidates.length; i++) {
+      if (_candidates[i].status === 'pending') html += renderCandidateCard(_candidates[i], i);
     }
   }
   grid.innerHTML = html;
 }
 
-function renderCandidateCard(c) {
+function renderCandidateCard(c, idx) {
   const scoreColor = c.matchScore >= 0.7 ? '#3fb950' : c.matchScore >= 0.4 ? '#f0c000' : '#8b949e';
   const statusBadge = c.status === 'approved'
     ? '<span class="badge badge-buy">APPROVED</span>'
@@ -608,9 +611,8 @@ function renderCandidateCard(c) {
 
   let buttons = '';
   if (c.status === 'pending') {
-    const safeId = esc(c.id).replace(/'/g, '&#39;');
-    buttons = '<button class="btn" style="background:#0d3320;color:#3fb950;border-color:#3fb950;font-size:11px;padding:4px 12px" onclick="approveMarket(this.dataset.id)" data-id="'+safeId+'">Approve</button> ' +
-      '<button class="btn" style="font-size:11px;padding:4px 12px" onclick="dismissMarket(this.dataset.id)" data-id="'+safeId+'">Dismiss</button>';
+    buttons = '<button class="btn" style="background:#0d3320;color:#3fb950;border-color:#3fb950;font-size:11px;padding:4px 12px" onclick="approveMarket('+idx+')">Approve</button> ' +
+      '<button class="btn" style="font-size:11px;padding:4px 12px" onclick="dismissMarket('+idx+')">Dismiss</button>';
   }
 
   return '<div class="market-card">' +
@@ -628,19 +630,31 @@ function renderCandidateCard(c) {
   '</div>';
 }
 
-async function approveMarket(id) {
+async function approveMarket(idx) {
+  const c = _candidates[idx];
+  if (!c) return;
   try {
-    const resp = await fetch('/api/candidates/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    const resp = await fetch('/api/candidates/approve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: c.id })
+    });
     const data = await resp.json();
-    if (data.success) loadCandidates();
+    if (data.success) { c.status = 'approved'; renderCandidates(); }
   } catch (e) {}
 }
 
-async function dismissMarket(id) {
+async function dismissMarket(idx) {
+  const c = _candidates[idx];
+  if (!c) return;
   try {
-    const resp = await fetch('/api/candidates/' + encodeURIComponent(id) + '/dismiss', { method: 'POST' });
+    const resp = await fetch('/api/candidates/dismiss', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: c.id })
+    });
     const data = await resp.json();
-    if (data.success) loadCandidates();
+    if (data.success) { c.status = 'dismissed'; renderCandidates(); }
   } catch (e) {}
 }
 
