@@ -184,18 +184,11 @@ async function poll() {
     for (const rp of (rawPositions?.market_positions || [])) {
       rawMap.set(rp.ticker || rp.market_ticker, rp);
     }
-    // Debug: dump raw position fields so we can identify the side indicator
-    if (rawPositions?.market_positions?.length) {
-      const sample = rawPositions.market_positions[0];
-      console.log(`[auto-sell] RAW POSITION FIELDS: ${JSON.stringify(Object.keys(sample))}`);
-      // Log first 3 positions with key fields
-      for (const rp of rawPositions.market_positions.slice(0, 3)) {
-        console.log(`[auto-sell] RAW: ${rp.ticker || rp.market_ticker} position=${rp.position} exposure=${rp.market_exposure} side=${rp.side} direction=${rp.direction} quantity=${rp.quantity} yes=${rp.yes_sub_total} no=${rp.no_sub_total}`);
-      }
-    }
 
     for (const pos of livePositions) {
-      if (pos.size <= 0) continue;
+      // size is signed: positive = Yes, negative = No, zero = no position
+      if (pos.size === 0) continue;
+      const posSize = Math.abs(pos.size);
 
       // Skip if there's already a pending sell order for this market
       if (openSellTickers.has(pos.marketId)) {
@@ -336,13 +329,13 @@ async function poll() {
         minSellPrice = 0.01;
       } else {
         // Still no entry price — hold, don't sell blind
-        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price found, holding`);
+        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${posSize} contracts | no entry price found, holding`);
         continue;
       }
 
       const entrySource = entry != null ? 'found' : '?';
       console.log(
-        `[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | ` +
+        `[auto-sell] ${ticker} ${side.toUpperCase()} | ${posSize} contracts | ` +
         `entry=${entry != null ? (entry*100).toFixed(1)+'c' : '?'} (${entrySource})  ` +
         `bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}  ` +
         `minSell=${(minSellPrice*100).toFixed(1)}c` +
@@ -367,8 +360,8 @@ async function poll() {
       // Place limit sell at the best bid price to fill immediately
       // Cap at 25 contracts per order (same as buy side) — remainder sells next cycle
       const sellPrice = bestBid;
-      const sellQty = Math.min(pos.size, 25);
-      console.log(`[auto-sell]   -> SELLING: ${sellQty}${sellQty < pos.size ? '/' + pos.size : ''} @ ${(sellPrice*100).toFixed(1)}c`);
+      const sellQty = Math.min(posSize, 25);
+      console.log(`[auto-sell]   -> SELLING: ${sellQty}${sellQty < posSize ? '/' + posSize : ''} @ ${(sellPrice*100).toFixed(1)}c`);
 
       if (config.dryRun) {
         console.log(`[auto-sell]   -> DRY RUN: would sell`);
@@ -421,7 +414,7 @@ async function poll() {
   try {
     const livePositions = await getKalshiClient().fetchPositions();
     for (const p of livePositions) {
-      if (p.size > 0) liveTickerSet.add(p.marketId);
+      if (p.size !== 0) liveTickerSet.add(p.marketId);
     }
     // Also block buys for tickers with ANY pending orders (buy or sell)
     for (const t of openOrderTickers) liveTickerSet.add(t);
@@ -480,7 +473,7 @@ async function poll() {
   let liveCount = 0;
   try {
     const live = await getKalshiClient().fetchPositions();
-    liveCount = live.filter(p => p.size > 0).length;
+    liveCount = live.filter(p => p.size !== 0).length;
   } catch {}
 
   console.log(
