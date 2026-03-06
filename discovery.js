@@ -54,19 +54,46 @@ function extractKeywords(text) {
 }
 
 /**
- * Score how well two sets of keywords match (Jaccard-like).
+ * "Specific" keywords — longer words, proper nouns, numbers.
+ * Generic words like "rate", "price", "change" get filtered out.
+ */
+const GENERIC_WORDS = new Set([
+  'rate', 'rates', 'price', 'change', 'market', 'markets',
+  'prime', 'minister', 'president', 'leader', 'election',
+  'increase', 'decrease', 'cut', 'raise', 'meeting',
+  'interest', 'federal', 'reserve', 'bps', 'basis', 'points',
+  'supreme', 'government', 'party', 'vote', 'win',
+]);
+
+function isSpecific(word) {
+  if (word.length < 3) return false;
+  if (GENERIC_WORDS.has(word)) return false;
+  return true;
+}
+
+/**
+ * Score how well two sets of keywords match.
+ * Requires specific keywords (names, countries, dates) to overlap,
+ * not just generic terms like "prime minister".
  */
 function matchScore(kw1, kw2) {
   const set1 = new Set(kw1);
   const set2 = new Set(kw2);
   let overlap = 0;
+  let specificOverlap = 0;
   for (const w of set1) {
-    if (set2.has(w)) overlap++;
+    if (set2.has(w)) {
+      overlap++;
+      if (isSpecific(w)) specificOverlap++;
+    }
   }
-  if (overlap === 0) return 0;
+  // Must have at least 1 specific keyword in common
+  // (e.g. a country name, person name, or date)
+  if (specificOverlap === 0) return 0;
+  if (overlap < 2) return 0;
+
   const union = new Set([...set1, ...set2]).size;
-  // Weight by overlap count too — more shared words = better
-  return (overlap / union) * (1 + overlap * 0.3);
+  return (overlap / union) * (1 + specificOverlap * 0.4);
 }
 
 /**
@@ -175,8 +202,8 @@ export async function runDiscovery() {
       }
     }
 
-    // Threshold: need reasonable match
-    if (bestScore < 0.3 || !bestMatch) continue;
+    // Threshold: need good match with specific keyword overlap
+    if (bestScore < 0.4 || !bestMatch) continue;
 
     const id = `${ticker}::${bestMatch.slug}`;
     if (dismissedIds.has(id)) continue;
