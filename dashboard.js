@@ -9,6 +9,7 @@ import express from 'express';
 import { validateConfig, config } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
 import { findDivergence } from './arbitrage.js';
+import { runDiscovery, loadCandidates, approveCandidate, dismissCandidate } from './discovery.js';
 
 validateConfig();
 initClients();
@@ -133,6 +134,32 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/history', (req, res) => {
   res.json(scanHistory.slice(0, 50));
+});
+
+// Discovery endpoints
+app.use(express.json());
+
+app.get('/api/discover', async (req, res) => {
+  try {
+    const result = await runDiscovery();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/candidates', (req, res) => {
+  res.json(loadCandidates());
+});
+
+app.post('/api/candidates/:id/approve', (req, res) => {
+  const result = approveCandidate(req.params.id);
+  res.json(result);
+});
+
+app.post('/api/candidates/:id/dismiss', (req, res) => {
+  const result = dismissCandidate(req.params.id);
+  res.json(result);
 });
 
 function getPublicConfig() {
@@ -285,6 +312,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <h2>Market Divergences</h2>
     <div class="market-grid" id="marketGrid">
       <div class="empty">Click "Scan Now" to fetch live prices</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Market Discovery</h2>
+    <div class="controls" style="margin-bottom:12px">
+      <button class="btn" id="discoverBtn" onclick="doDiscover()">Discover New Markets</button>
+      <button class="btn" onclick="loadCandidates()">Refresh</button>
+      <span id="discoverStatus" style="font-size:12px;color:#8b949e"></span>
+    </div>
+    <div id="candidateGrid" class="market-grid">
+      <div class="empty">Click "Discover New Markets" to scan both platforms</div>
     </div>
   </div>
 
@@ -507,9 +546,107 @@ async function loadHistory() {
   } catch (e) {}
 }
 
+// Discovery functions
+async function doDiscover() {
+  const btn = document.getElementById('discoverBtn');
+  const status = document.getElementById('discoverStatus');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Scanning platforms...';
+  status.textContent = 'This may take 30-60 seconds...';
+  try {
+    const resp = await fetch('/api/discover');
+    const data = await resp.json();
+    status.textContent = 'Found ' + data.pending + ' new candidates';
+    renderCandidates(data.candidates);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Discover New Markets';
+  }
+}
+
+async function loadCandidates() {
+  try {
+    const resp = await fetch('/api/candidates');
+    const data = await resp.json();
+    renderCandidates(data);
+  } catch (e) {}
+}
+
+function renderCandidates(candidates) {
+  const grid = document.getElementById('candidateGrid');
+  const pending = candidates.filter(c => c.status === 'pending');
+  const approved = candidates.filter(c => c.status === 'approved');
+
+  if (!pending.length && !approved.length) {
+    grid.innerHTML = '<div class="empty">No candidates found yet</div>';
+    return;
+  }
+
+  let html = '';
+  if (approved.length) {
+    html += '<div style="font-size:12px;color:#3fb950;margin-bottom:8px;font-weight:600">APPROVED (' + approved.length + ')</div>';
+    for (const c of approved) {
+      html += renderCandidateCard(c);
+    }
+  }
+  if (pending.length) {
+    html += '<div style="font-size:12px;color:#f0c000;margin:12px 0 8px;font-weight:600">PENDING REVIEW (' + pending.length + ')</div>';
+    for (const c of pending) {
+      html += renderCandidateCard(c);
+    }
+  }
+  grid.innerHTML = html;
+}
+
+function renderCandidateCard(c) {
+  const scoreColor = c.matchScore >= 0.7 ? '#3fb950' : c.matchScore >= 0.4 ? '#f0c000' : '#8b949e';
+  const statusBadge = c.status === 'approved'
+    ? '<span class="badge badge-buy">APPROVED</span>'
+    : '<span class="badge badge-wait">PENDING</span>';
+
+  let buttons = '';
+  if (c.status === 'pending') {
+    const safeId = esc(c.id).replace(/'/g, '&#39;');
+    buttons = '<button class="btn" style="background:#0d3320;color:#3fb950;border-color:#3fb950;font-size:11px;padding:4px 12px" onclick="approveMarket(this.dataset.id)" data-id="'+safeId+'">Approve</button> ' +
+      '<button class="btn" style="font-size:11px;padding:4px 12px" onclick="dismissMarket(this.dataset.id)" data-id="'+safeId+'">Dismiss</button>';
+  }
+
+  return '<div class="market-card">' +
+    '<div class="title">' + statusBadge + ' <span style="color:' + scoreColor + ';font-size:11px">' + (c.matchScore * 100).toFixed(0) + '% match</span></div>' +
+    '<div style="margin:8px 0">' +
+      '<div style="font-size:13px"><span style="color:#8b949e">Kalshi:</span> ' + esc(c.kalshiTitle) + ' <span style="color:#484f58;font-size:11px">(' + esc(c.kalshiTicker) + ')</span></div>' +
+      '<div style="font-size:13px;margin-top:4px"><span style="color:#8b949e">Poly:</span> ' + esc(c.polyQuestion) + '</div>' +
+    '</div>' +
+    '<div class="metrics-row">' +
+      '<div class="metric"><span class="ml">Mode: </span><span class="mv">' + c.compareMode + '</span></div>' +
+      '<div class="metric"><span class="ml">K Price: </span><span class="mv">' + (c.kalshiPrice != null ? (c.kalshiPrice * 100).toFixed(1) + 'c' : '?') + '</span></div>' +
+      '<div class="metric"><span class="ml">P Price: </span><span class="mv">' + (c.polyPrice != null ? (c.polyPrice * 100).toFixed(1) + 'c' : '?') + '</span></div>' +
+    '</div>' +
+    (buttons ? '<div style="margin-top:10px">' + buttons + '</div>' : '') +
+  '</div>';
+}
+
+async function approveMarket(id) {
+  try {
+    const resp = await fetch('/api/candidates/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) loadCandidates();
+  } catch (e) {}
+}
+
+async function dismissMarket(id) {
+  try {
+    const resp = await fetch('/api/candidates/' + encodeURIComponent(id) + '/dismiss', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) loadCandidates();
+  } catch (e) {}
+}
+
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); }).catch(() => {});
+fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); loadCandidates(); }).catch(() => {});
 </script>
 </body>
 </html>`;
