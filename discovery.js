@@ -62,7 +62,16 @@ const GENERIC_WORDS = new Set([
   'prime', 'minister', 'president', 'leader', 'election',
   'increase', 'decrease', 'cut', 'raise', 'meeting',
   'interest', 'federal', 'reserve', 'bps', 'basis', 'points',
-  'supreme', 'government', 'party', 'vote', 'win',
+  'supreme', 'government', 'party', 'vote', 'win', 'winner',
+  'perform', 'song', 'theme', 'announced', 'become',
+  'first', 'second', 'third', 'year', 'month', 'day',
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december',
+  'united', 'states', 'world', 'national', 'international',
+  'championship', 'season', 'game', 'series', 'round', 'final',
+  'cup', 'league', 'team', 'player', 'coach', 'manager',
+  'deal', 'agreement', 'bill', 'act', 'law', 'policy',
+  'company', 'stock', 'shares', 'ceo', 'billion', 'million',
 ]);
 
 function isSpecific(word) {
@@ -176,8 +185,9 @@ export async function runDiscovery() {
     prices: JSON.parse(p.outcomePrices || '[]'),
   }));
 
-  const candidates = [];
-  const seenIds = new Set();
+  // First pass: find best Kalshi ticker per Polymarket slug
+  // (avoids showing 10 variants of the same event)
+  const bestPerPolySlug = new Map();
 
   for (const km of kalshiMarkets) {
     const ticker = km.marketId || km.ticker;
@@ -200,28 +210,40 @@ export async function runDiscovery() {
       }
     }
 
-    // Threshold: need good match with specific keyword overlap
     if (bestScore < 0.4 || !bestMatch) continue;
 
     const id = `${ticker}::${bestMatch.slug}`;
     if (dismissedIds.has(id)) continue;
-    if (seenIds.has(id)) continue;
-    seenIds.add(id);
 
-    const compareMode = guessCompareMode(kalshiTitle, bestMatch.question);
+    // Keep only the highest-scoring Kalshi ticker per Poly slug
+    const existing = bestPerPolySlug.get(bestMatch.slug);
+    if (!existing || bestScore > existing.score) {
+      bestPerPolySlug.set(bestMatch.slug, {
+        score: bestScore,
+        ticker, kalshiTitle, bestMatch,
+        kalshiPrice: km.yes?.price ?? km.outcomes?.[0]?.price ?? null,
+      });
+    }
+  }
+
+  // Build candidates from deduplicated matches
+  const candidates = [];
+  for (const [polySlug, entry] of bestPerPolySlug) {
+    const id = `${entry.ticker}::${polySlug}`;
+    const compareMode = guessCompareMode(entry.kalshiTitle, entry.bestMatch.question);
 
     candidates.push({
       id,
-      kalshiTicker: ticker,
-      kalshiTitle,
-      polySlug: bestMatch.slug,
-      polyQuestion: bestMatch.question,
+      kalshiTicker: entry.ticker,
+      kalshiTitle: entry.kalshiTitle,
+      polySlug,
+      polyQuestion: entry.bestMatch.question,
       compareMode,
-      matchScore: Math.round(bestScore * 100) / 100,
-      kalshiPrice: km.yes?.price ?? km.outcomes?.[0]?.price ?? null,
-      polyPrice: parseFloat(bestMatch.prices[0]) || null,
+      matchScore: Math.round(entry.score * 100) / 100,
+      kalshiPrice: entry.kalshiPrice,
+      polyPrice: parseFloat(entry.bestMatch.prices[0]) || null,
       discoveredAt: new Date().toISOString(),
-      status: 'pending',  // pending | approved | dismissed
+      status: 'pending',
     });
   }
 
