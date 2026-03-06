@@ -6,6 +6,10 @@
 import { config } from './config.js';
 import { getKalshiClient, fetchKalshiMarket } from './fetcher.js';
 
+// Absolute maximum contracts per order — even if math is wrong,
+// this limits worst-case spend to MAX_CONTRACTS * $1 = $25
+const MAX_CONTRACTS = 25;
+
 /**
  * Enter a position on Kalshi based on divergence signal.
  */
@@ -16,10 +20,23 @@ export async function enterPosition(signal, marketConfig, contracts) {
 
   // Hard safety cap: never spend more than positionSizeUSD
   const limitPrice = Math.round((price + 0.01) * 100) / 100;
+
+  // Clamp contracts to absolute maximum
+  if (contracts > MAX_CONTRACTS) {
+    console.warn(`  CLAMPED: ${contracts} contracts -> ${MAX_CONTRACTS} (hard limit)`);
+    contracts = MAX_CONTRACTS;
+  }
+
   const maxCost = limitPrice * contracts;
   if (maxCost > config.positionSizeUSD * 1.05) {
     console.error(`  BLOCKED: estimated cost $${maxCost.toFixed(2)} exceeds limit $${config.positionSizeUSD}`);
     return { success: false, error: 'cost exceeds position size limit' };
+  }
+
+  // Sanity check: if entry price is below 5c or above 97c, something is likely wrong
+  if (price < 0.05 || price > 0.97) {
+    console.error(`  BLOCKED: entry price ${(price*100).toFixed(1)}c is outside safe range (5c-97c)`);
+    return { success: false, error: 'entry price outside safe range' };
   }
 
   console.log(`\n${prefix} ENTER: ${marketConfig.label}`);
@@ -42,9 +59,6 @@ export async function enterPosition(signal, marketConfig, contracts) {
 
     if (!outcome) throw new Error(`Outcome "${side}" not found in ${JSON.stringify(market.outcomes)}`);
 
-    // Use the outcome object directly (pmxt resolves marketId/outcomeId from it)
-    // Price in decimal (0-1), round up by 1c to ensure fill
-    const limitPrice = Math.round((price + 0.01) * 100) / 100;
     console.log(`  Placing order: outcome=${outcome.outcomeId} side=buy type=limit price=${limitPrice} amount=${contracts}`);
 
     const order = await getKalshiClient().createOrder({
