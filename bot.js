@@ -5,7 +5,7 @@
  */
 
 import { config, loadApprovedMarkets } from './config.js';
-import { initClients, fetchMarketPrices, getKalshiClient } from './fetcher.js';
+import { initClients, fetchMarketPrices, fetchOrderBook, getKalshiClient } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
 
@@ -105,47 +105,84 @@ async function poll() {
     }
   }
 
-  // 3b. Auto-sell: check real Kalshi positions and sell any that are profitable
+  // 3b. Auto-sell: check real Kalshi positions, sell if order book bid > entry price
   try {
     const livePositions = await getKalshiClient().fetchPositions();
     for (const pos of livePositions) {
-      if (pos.size <= 0) continue; // skip if no contracts held
-      if (pos.unrealizedPnL > 0) {
-        console.log(`[auto-sell] ${pos.marketId} ${pos.outcomeLabel} | ${pos.size} contracts | entry=${(pos.entryPrice*100).toFixed(1)}c current=${(pos.currentPrice*100).toFixed(1)}c | PnL: +$${pos.unrealizedPnL.toFixed(2)}`);
+      if (pos.size <= 0) continue;
 
-        // Fetch market to get outcome object for the sell order
-        const markets = await getKalshiClient().fetchMarkets({ ticker: pos.marketId, limit: 1 });
-        if (!markets.length) { console.warn(`[auto-sell] Market not found: ${pos.marketId}`); continue; }
+      const isYes = pos.outcomeLabel === 'Yes';
+      const ticker = pos.marketId;
+
+      // Fetch the order book to find real bid prices
+      let bestBid = null;
+      try {
+        const ob = await fetchOrderBook(ticker);
+        // Best bid = what someone will actually pay for our contracts right now
+        if (isYes) {
+          bestBid = ob.spread.yesBid;
+        } else {
+          // For NO positions: best NO bid, or inferred from YES ask (1 - yesAsk)
+          bestBid = ob.spread.noBid
+            ?? (ob.spread.yesAsk != null ? Math.round((1 - ob.spread.yesAsk) * 100) / 100 : null);
+        }
+      } catch (e) {
+        console.warn(`[auto-sell] Order book failed for ${ticker}: ${e.message}`);
+      }
+      await sleep(1500);
+
+      const entry = pos.entryPrice;
+      const minSellPrice = Math.round((entry + 0.01) * 100) / 100; // at least 1c profit per contract
+
+      console.log(
+        `[auto-sell] ${ticker} ${pos.outcomeLabel} | ${pos.size} contracts | ` +
+        `entry=${(entry*100).toFixed(1)}c  bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}  ` +
+        `minSell=${(minSellPrice*100).toFixed(1)}c`
+      );
+
+      if (bestBid == null) {
+        console.log(`[auto-sell]   -> no bid available, holding`);
+        continue;
+      }
+
+      if (bestBid < minSellPrice) {
+        const gap = ((minSellPrice - bestBid) * 100).toFixed(1);
+        console.log(`[auto-sell]   -> bid ${gap}c below profitable sell price, holding`);
+        continue;
+      }
+
+      // Bid is above entry + 1c — we can sell profitably
+      // Place limit sell at the best bid price to fill immediately
+      const sellPrice = bestBid;
+      const profit = ((sellPrice - entry) * pos.size).toFixed(2);
+      console.log(`[auto-sell]   -> PROFITABLE: selling ${pos.size} @ ${(sellPrice*100).toFixed(1)}c (profit ~$${profit})`);
+
+      if (config.dryRun) {
+        console.log(`[auto-sell]   -> DRY RUN: would sell`);
+        continue;
+      }
+
+      try {
+        const markets = await getKalshiClient().fetchMarkets({ ticker, limit: 1 });
+        if (!markets.length) { console.warn(`[auto-sell]   -> market not found`); continue; }
 
         const market = markets[0];
         const outcome = market.outcomes?.find(o => o.outcomeId === pos.outcomeId)
           ?? market.outcomes?.find(o => o.label === pos.outcomeLabel);
-        if (!outcome) { console.warn(`[auto-sell] Outcome not found for ${pos.marketId}`); continue; }
+        if (!outcome) { console.warn(`[auto-sell]   -> outcome not found`); continue; }
 
-        // Sell at current price minus 1c to ensure fill
-        const sellPrice = Math.max(0.01, Math.round((pos.currentPrice - 0.01) * 100) / 100);
-
-        if (config.dryRun) {
-          console.log(`[auto-sell] DRY RUN: would sell ${pos.size} @ ${(sellPrice*100).toFixed(1)}c`);
-          continue;
-        }
-
-        try {
-          const order = await getKalshiClient().createOrder({
-            outcome,
-            side: 'sell',
-            type: 'limit',
-            amount: pos.size,
-            price: sellPrice,
-          });
-          console.log(`[auto-sell] SOLD ${pos.marketId} | ${JSON.stringify(order)}`);
-        } catch (e) {
-          console.error(`[auto-sell] Sell failed for ${pos.marketId}: ${e.message}`);
-        }
-        await sleep(1500); // rate limit
-      } else {
-        console.log(`[auto-sell] ${pos.marketId} ${pos.outcomeLabel} | PnL: $${pos.unrealizedPnL?.toFixed(2) ?? '?'} (holding)`);
+        const order = await getKalshiClient().createOrder({
+          outcome,
+          side: 'sell',
+          type: 'limit',
+          amount: pos.size,
+          price: sellPrice,
+        });
+        console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
+      } catch (e) {
+        console.error(`[auto-sell]   -> sell failed: ${e.message}`);
       }
+      await sleep(1500);
     }
   } catch (e) {
     console.warn(`[auto-sell] Failed to check positions: ${e.message}`);
