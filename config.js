@@ -12,7 +12,7 @@ export const config = {
   minDivergenceBps: parseInt(process.env.MIN_DIVERGENCE_BPS || '300'),
   minIRR: parseInt(process.env.MIN_IRR || '20'),
   positionSizeUSD: parseInt(process.env.POSITION_SIZE_USD || '100'),
-  maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '3'),
+  maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '999'),
   pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '60'),
   exitConvergenceBps: parseInt(process.env.EXIT_CONVERGENCE_BPS || '50'),
 
