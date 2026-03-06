@@ -146,27 +146,32 @@ async function poll() {
       // fails with DECODER error due to key format issues)
       let bestBid = null;
       try {
-        const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`);
+        const obUrl = `https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`;
+        const obResp = await fetch(obUrl);
         if (obResp.ok) {
           const obData = await obResp.json();
+          console.log(`[auto-sell] ${ticker} orderbook raw: ${JSON.stringify(obData).substring(0, 300)}`);
           const ob = obData.orderbook || obData;
-          // YES bids = people willing to buy YES contracts
-          // NO bids = people willing to buy NO contracts
+          // Kalshi orderbook: "yes" and "no" arrays of [price_cents, quantity]
           const yesBids = ob.yes || [];
           const noBids = ob.no || [];
           if (side === 'yes' && yesBids.length) {
-            bestBid = yesBids[0][0] / 100; // Kalshi REST API returns cents
+            bestBid = yesBids[0][0] / 100;
           } else if (side === 'no' && noBids.length) {
             bestBid = noBids[0][0] / 100;
-          } else if (side === 'yes' && noBids.length) {
-            // Infer YES bid from NO ask: yesBid ≈ 1 - noAsk
-            // (noBids are sorted desc, so last entry is lowest = best NO ask)
-          } else if (side === 'no' && yesBids.length) {
-            // Infer NO bid from YES ask: noBid ≈ 1 - yesAsk
           }
+          // If no direct bids, infer from the other side
+          if (bestBid == null && side === 'yes' && noBids.length) {
+            // Best YES bid ≈ 1 - highest NO price (since YES + NO = $1)
+            bestBid = Math.round((1 - noBids[0][0] / 100) * 100) / 100;
+          } else if (bestBid == null && side === 'no' && yesBids.length) {
+            bestBid = Math.round((1 - yesBids[0][0] / 100) * 100) / 100;
+          }
+        } else {
+          console.warn(`[auto-sell] ${ticker} orderbook HTTP ${obResp.status}`);
         }
       } catch (e) {
-        // REST order book failed too
+        console.warn(`[auto-sell] ${ticker} orderbook error: ${e.message}`);
       }
       await sleep(1500);
 
