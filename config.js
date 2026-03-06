@@ -53,7 +53,38 @@ export const config = {
       // Both YES = acquisition happens (Kalshi YES = no acquisition, needs invert)
       compareMode: 'kalshi-no-vs-poly-yes',
     },
-    // Removed: KXJPMCEONEW-KWAR is JPMorgan CEO market, not Fed Chair
+    {
+      label: 'Fed Jun - Rate Cut (25bp)',
+      kalshiTicker: 'KXFED-26JUN-T4.25',
+      polySlug: 'will-the-fed-decrease-interest-rates-by-25-bps-after-the-june-2026-meeting',
+      compareMode: 'direct',
+      expiryDate: '2026-06-18',
+    },
+    {
+      label: 'Fed Jun - No Change',
+      kalshiTicker: 'KXFED-26JUN-T4.50',
+      polySlug: 'will-there-be-no-change-in-fed-interest-rates-after-the-june-2026-meeting',
+      compareMode: 'kalshi-no-vs-poly-yes',
+      expiryDate: '2026-06-18',
+    },
+    {
+      label: 'Israel PM - Naftali Bennett',
+      kalshiTicker: 'KXNEXTISRAELPM-45JAN01-NBEN',
+      polySlug: 'will-naftali-bennett-be-the-next-prime-minister-of-israel',
+      compareMode: 'direct',
+    },
+    {
+      label: 'Israel PM - Yair Golan',
+      kalshiTicker: 'KXNEXTISRAELPM-45JAN01-YGOL',
+      polySlug: 'will-yair-golan-be-the-next-prime-minister-of-israel',
+      compareMode: 'direct',
+    },
+    {
+      label: 'Israel PM - Benny Gantz',
+      kalshiTicker: 'KXNEXTISRAELPM-45JAN01-BGAN',
+      polySlug: 'will-benny-gantz-be-the-next-prime-minister-of-israel',
+      compareMode: 'direct',
+    },
   ],
 };
 
