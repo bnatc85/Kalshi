@@ -64,7 +64,9 @@ const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
 const MOMENTUM_MIN_PRICE = 0.55;    // don't buy below 55c
 const MOMENTUM_MAX_PRICE = 0.70;    // don't buy above 70c
 const MOMENTUM_CONTRACTS = 1;       // test with 1 contract
-const MOMENTUM_MAX_HOURS = 24;      // markets closing within 24h
+const MOMENTUM_MAX_HOURS = 48;      // markets closing within 48h
+// Skip parlays and multi-leg markets
+const MOMENTUM_SKIP_PREFIXES = ['KXMVE'];
 
 export async function startBot() {
   console.log('\n========================================');
@@ -505,10 +507,11 @@ async function poll() {
 async function scanSportsMomentum(liveTickerSet) {
   try {
     // Fetch markets closing within MOMENTUM_MAX_HOURS
+    // Kalshi API expects unix timestamps (seconds), not ISO strings
     const now = Date.now();
-    const cutoff = new Date(now + MOMENTUM_MAX_HOURS * 60 * 60 * 1000).toISOString();
-    const nowIso = new Date(now - 60 * 1000).toISOString(); // 1min ago to ensure "closing soon"
-    const url = `https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open&max_close_ts=${encodeURIComponent(cutoff)}&min_close_ts=${encodeURIComponent(nowIso)}`;
+    const minClose = Math.floor((now - 60 * 1000) / 1000);  // 1min ago
+    const maxClose = Math.floor((now + MOMENTUM_MAX_HOURS * 60 * 60 * 1000) / 1000);
+    const url = `https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open&min_close_ts=${minClose}&max_close_ts=${maxClose}`;
 
     const resp = await fetch(url);
     if (!resp.ok) {
@@ -530,10 +533,12 @@ async function scanSportsMomentum(liveTickerSet) {
     for (const m of markets) {
       const ticker = m.ticker;
       if (!ticker) continue;
+      if (MOMENTUM_SKIP_PREFIXES.some(p => ticker.startsWith(p))) continue;
 
-      // Current yes price from the market data (last trade or ask)
-      const yesPrice = (m.yes_ask != null ? m.yes_ask : m.last_price) / 100;
-      if (yesPrice == null || isNaN(yesPrice)) continue;
+      // Current yes price from the market data (last trade or mid)
+      const rawPrice = m.yes_ask > 1 ? m.yes_ask : (m.last_price || 0);
+      const yesPrice = rawPrice / 100;
+      if (!yesPrice || yesPrice < 0.05) continue;
 
       // Update price history
       if (!priceHistory.has(ticker)) priceHistory.set(ticker, []);
