@@ -164,7 +164,24 @@ async function poll() {
 
   // 3b. Auto-sell: check real Kalshi positions, sell if bid > entry price
   try {
+    // Fetch positions via raw Kalshi API to get all fields (pmxt strips some)
+    let rawPositions = null;
+    try {
+      rawPositions = await getKalshiClient().callApi('GetPositions', { limit: 100, settlement_status: 'unsettled' });
+      if (rawPositions?.market_positions?.length) {
+        console.log(`[auto-sell] Raw position sample: ${JSON.stringify(rawPositions.market_positions[0])}`);
+      }
+    } catch (e) {
+      console.warn(`[auto-sell] Raw positions API failed: ${e.message}`);
+    }
+
     const livePositions = await getKalshiClient().fetchPositions();
+
+    // Merge raw position data (especially average prices) into pmxt positions
+    const rawMap = new Map();
+    for (const rp of (rawPositions?.market_positions || [])) {
+      rawMap.set(rp.ticker || rp.market_ticker, rp);
+    }
 
     for (const pos of livePositions) {
       if (pos.size <= 0) continue;
@@ -266,9 +283,22 @@ async function poll() {
         entry = savedTrade?.entryPrice ?? null;
       }
 
-      // 3. Kalshi API position entry price
+      // 3. Kalshi API position entry price (pmxt)
       if (entry == null && pos.entryPrice > 0) {
         entry = pos.entryPrice;
+      }
+
+      // 3b. Raw Kalshi position data (may have avg price fields pmxt misses)
+      if (entry == null) {
+        const raw = rawMap.get(ticker);
+        if (raw) {
+          // Try various field names Kalshi might use
+          const avgCents = raw.market_average_price ?? raw.average_price ?? raw.realized_cost ?? null;
+          if (avgCents != null && avgCents > 0) {
+            entry = avgCents / 100;
+            console.log(`[auto-sell] ${ticker}: entry from raw position: ${(entry*100).toFixed(1)}c`);
+          }
+        }
       }
 
       // 4. Kalshi fill history
