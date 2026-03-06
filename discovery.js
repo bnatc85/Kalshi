@@ -122,10 +122,8 @@ function matchScore(kw1, kw2) {
       if (isSpecific(w)) specificOverlap++;
     }
   }
-  // Must have at least 2 specific keywords in common
-  // (e.g. a person name + topic, or event + date)
-  // A single shared word like "Denver" or "North Carolina" is not enough
-  if (specificOverlap < 2) return 0;
+  // Must have at least 1 specific keyword in common
+  if (specificOverlap < 1) return 0;
 
   const union = new Set([...set1, ...set2]).size;
   return (overlap / union) * (1 + specificOverlap * 0.4);
@@ -272,7 +270,7 @@ export async function runDiscovery() {
       }
     }
 
-    if (bestScore < 0.6 || !bestMatch) continue;
+    if (bestScore < 0.35 || !bestMatch) continue;
 
     const id = `${ticker}::${bestMatch.slug}`;
     if (dismissedIds.has(id)) continue;
@@ -338,6 +336,11 @@ export async function runDiscovery() {
   saveCandidates(merged);
   const pending = merged.filter(c => c.status === 'pending');
   console.log(`[discovery] Found ${pending.length} new candidates (${merged.length} total)`);
+
+  // Log top candidates for debugging
+  for (const c of merged.slice(0, 10)) {
+    console.log(`[discovery]   ${c.matchScore.toFixed(2)} | K: ${c.kalshiTitle.substring(0, 40)} | P: ${c.polyQuestion?.substring(0, 40) || '?'}`);
+  }
 
   return { total: merged.length, pending: pending.length, candidates: merged };
 }
