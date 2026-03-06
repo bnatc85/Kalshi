@@ -4,10 +4,54 @@
  * trades on Kalshi only using Polymarket as a price signal.
  */
 
+import fs from 'fs';
 import { config, loadApprovedMarkets } from './config.js';
 import { initClients, fetchMarketPrices, fetchKalshiMarket, getKalshiClient } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
+
+const TRADES_FILE = './trades.json';
+
+/**
+ * Persistent trade ledger — survives restarts.
+ * Each entry: { ticker, side, entryPrice, limitPrice, contracts, entryTime, status }
+ * status: 'open' | 'closed'
+ */
+function loadTrades() {
+  try { return JSON.parse(fs.readFileSync(TRADES_FILE, 'utf8')); }
+  catch { return []; }
+}
+
+function saveTrades(trades) {
+  fs.writeFileSync(TRADES_FILE, JSON.stringify(trades, null, 2));
+}
+
+function recordTrade(ticker, side, entryPrice, limitPrice, contracts) {
+  const trades = loadTrades();
+  trades.push({
+    ticker, side, entryPrice, limitPrice, contracts,
+    entryTime: new Date().toISOString(),
+    status: 'open',
+  });
+  saveTrades(trades);
+  console.log(`[trades] Saved: ${ticker} ${side.toUpperCase()} ${contracts}x @ ${(entryPrice*100).toFixed(1)}c`);
+}
+
+function closeTrade(ticker, sellPrice, pnl) {
+  const trades = loadTrades();
+  const trade = trades.find(t => t.ticker === ticker && t.status === 'open');
+  if (trade) {
+    trade.status = 'closed';
+    trade.sellPrice = sellPrice;
+    trade.pnl = pnl;
+    trade.closeTime = new Date().toISOString();
+    saveTrades(trades);
+  }
+}
+
+function getOpenTrade(ticker) {
+  return loadTrades().find(t => t.ticker === ticker && t.status === 'open');
+}
 
 const positions = [];
 const closedPnl = [];
@@ -189,27 +233,27 @@ async function poll() {
       }
       await sleep(1500);
 
-      // Determine minimum sell price
-      const entry = pos.entryPrice;
+      // Look up entry price: first from our trade ledger, then from API
+      const savedTrade = getOpenTrade(ticker);
+      const entry = savedTrade?.entryPrice ?? (pos.entryPrice > 0 ? pos.entryPrice : null);
       const isAccidentalPosition = ticker === 'KXFED-26JUN-T4.50';
 
       let minSellPrice;
       if (entry != null && entry > 0) {
+        // We know what we paid — require at least 1c profit (or accept 5c loss for accidental)
         const maxLossPerContract = isAccidentalPosition ? 0.05 : -0.01;
         minSellPrice = Math.round((entry - maxLossPerContract) * 100) / 100;
       } else if (isAccidentalPosition) {
-        // No entry price from API — sell at any bid to exit
         minSellPrice = 0.01;
       } else {
-        // No entry price and not the accidental position — hold.
-        // Without knowing what we paid, we can't determine if selling is profitable.
-        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price, PnL=$${pos.unrealizedPnL?.toFixed(2) ?? '?'}, holding (need entry price to sell)`);
+        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price, holding`);
         continue;
       }
 
+      const entrySource = savedTrade ? 'ledger' : (pos.entryPrice > 0 ? 'api' : '?');
       console.log(
         `[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | ` +
-        `entry=${entry != null ? (entry*100).toFixed(1)+'c' : '?'}  ` +
+        `entry=${entry != null ? (entry*100).toFixed(1)+'c' : '?'} (${entrySource})  ` +
         `bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}  ` +
         `minSell=${(minSellPrice*100).toFixed(1)}c` +
         (isAccidentalPosition ? '  [ACCIDENTAL - exit ASAP]' : '')
@@ -244,6 +288,9 @@ async function poll() {
           price: sellPrice,
         });
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
+        const pnl = entry ? (sellPrice - entry) * pos.size : null;
+        if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        closeTrade(ticker, sellPrice, pnl);
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
         console.error(`[auto-sell]   -> error details: ${JSON.stringify(e, Object.getOwnPropertyNames(e)).substring(0, 500)}`);
@@ -255,8 +302,9 @@ async function poll() {
   }
 
   // 4. Enter new positions
-  // Fetch real Kalshi positions to avoid re-buying markets we already hold
-  let liveTickerSet = new Set();
+  // Fetch real Kalshi positions AND check trade ledger to avoid re-buying
+  const openTrades = loadTrades().filter(t => t.status === 'open');
+  let liveTickerSet = new Set(openTrades.map(t => t.ticker));
   try {
     const livePositions = await getKalshiClient().fetchPositions();
     for (const p of livePositions) {
@@ -287,7 +335,10 @@ async function poll() {
 
     const result = await enterPosition(sig, sig.market, contracts);
 
-    if (result.success) {
+    if (result.success && !result.dryRun) {
+      // Persist trade to disk so we know the entry price after restarts
+      recordTrade(sig.market.kalshiTicker, sig.tradeSide, sig.entryPrice, limitPrice, contracts);
+
       positions.push({
         marketLabel: sig.marketLabel,
         marketIndex: sig.marketIndex,

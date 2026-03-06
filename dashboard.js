@@ -5,6 +5,7 @@
  * Run: npm run dashboard
  */
 
+import fs from 'fs';
 import express from 'express';
 import { validateConfig, config, loadApprovedMarkets } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
@@ -164,13 +165,35 @@ app.post('/api/candidates/dismiss', (req, res) => {
   res.json(result);
 });
 
+// Trades ledger endpoint
+app.get('/api/trades', (req, res) => {
+  try {
+    const data = JSON.parse(fs.readFileSync('./trades.json', 'utf8'));
+    res.json(data);
+  } catch {
+    res.json([]);
+  }
+});
+
 // Positions endpoints
 app.get('/api/positions', async (req, res) => {
   try {
     const positions = await getKalshiClient().fetchPositions();
-    // Log raw data once so we can see exact field names/values
-    if (positions.length) console.log('[positions] Raw sample:', JSON.stringify(positions[0]));
-    res.json(positions);
+    // Merge with trade ledger for entry prices
+    let trades = [];
+    try { trades = JSON.parse(fs.readFileSync('./trades.json', 'utf8')); } catch {}
+    const tradeMap = new Map(trades.filter(t => t.status === 'open').map(t => [t.ticker, t]));
+
+    const enriched = positions.map(p => {
+      const saved = tradeMap.get(p.marketId);
+      return {
+        ...p,
+        entryPrice: p.entryPrice || saved?.entryPrice || null,
+        savedSide: saved?.side || null,
+        savedContracts: saved?.contracts || null,
+      };
+    });
+    res.json(enriched);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -732,7 +755,7 @@ function renderPositions() {
     const entry = p.entryPrice || null;
     const current = p.currentPrice || null;
     const pnl = p.unrealizedPnL ?? null;
-    // Derive cost: entryPrice * qty, or from currentValue - PnL
+    const tradeSide = p.savedSide || (p.size > 0 ? 'yes' : 'no');
     let cost = null;
     if (entry && qty) {
       cost = entry * qty;
