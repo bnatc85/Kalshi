@@ -291,9 +291,11 @@ async function poll() {
 
       let minSellPrice;
       if (entry != null && entry > 0) {
-        // We know what we paid — require at least 1c profit (or accept 5c loss for accidental)
-        const maxLossPerContract = isAccidentalPosition ? 0.05 : -0.01;
-        minSellPrice = Math.round((entry - maxLossPerContract) * 100) / 100;
+        // Kalshi taker fee is ~0.7c/contract each side, so round-trip ~1.4c.
+        // Require at least 3c above entry to guarantee profit after fees.
+        // (or accept 5c loss for accidental positions we're trying to exit)
+        const minProfitCents = isAccidentalPosition ? -5 : 3;
+        minSellPrice = Math.round((entry + minProfitCents / 100) * 100) / 100;
       } else if (isAccidentalPosition) {
         minSellPrice = 0.01;
       } else {

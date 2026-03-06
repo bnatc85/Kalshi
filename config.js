@@ -10,7 +10,7 @@ export const config = {
 
   // Bot behavior
   dryRun: process.env.DRY_RUN !== 'false',
-  minDivergenceBps: parseInt(process.env.MIN_DIVERGENCE_BPS || '300'),
+  minDivergenceBps: parseInt(process.env.MIN_DIVERGENCE_BPS || '500'),
   minIRR: parseInt(process.env.MIN_IRR || '20'),
   positionSizeUSD: parseInt(process.env.POSITION_SIZE_USD || '100'),
   maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '999'),
