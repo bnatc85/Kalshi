@@ -9,6 +9,7 @@ import { getKalshiClient, initClients } from './fetcher.js';
 import { config } from './config.js';
 
 const CANDIDATES_FILE = './candidates.json';
+const DISMISSED_FILE = './dismissed.json';
 
 // Load saved candidates
 export function loadCandidates() {
@@ -22,6 +23,21 @@ export function loadCandidates() {
 // Save candidates
 function saveCandidates(candidates) {
   fs.writeFileSync(CANDIDATES_FILE, JSON.stringify(candidates, null, 2));
+}
+
+// Dismissed IDs persist separately so they survive candidates.json being deleted
+function loadDismissedIds() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(DISMISSED_FILE, 'utf8')));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissedId(id) {
+  const ids = loadDismissedIds();
+  ids.add(id);
+  fs.writeFileSync(DISMISSED_FILE, JSON.stringify([...ids], null, 2));
 }
 
 /**
@@ -111,27 +127,39 @@ function matchScore(kw1, kw2) {
  * Fetch active Kalshi markets (events with open markets).
  */
 async function fetchKalshiMarkets() {
-  const client = getKalshiClient();
   const seen = new Map();
+  let cursor = null;
 
-  // Fetch multiple batches, deduplicate by marketId
-  // Use offset-based pagination since pmxt cursor support is unreliable
-  for (let offset = 0; offset < 2000; offset += 200) {
-    const params = { limit: 200, status: 'open', offset };
+  // Use Kalshi REST API directly — pmxt doesn't paginate properly
+  for (let i = 0; i < 20; i++) {
+    let url = 'https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open';
+    if (cursor) url += '&cursor=' + encodeURIComponent(cursor);
+
     try {
-      const batch = await client.fetchMarkets(params);
-      if (!batch.length) break;
+      const resp = await fetch(url);
+      if (!resp.ok) { console.log(`[discovery] Kalshi API ${resp.status}`); break; }
+      const data = await resp.json();
+      const markets = data.markets || [];
+      if (!markets.length) break;
+
       let newCount = 0;
-      for (const m of batch) {
-        const id = m.marketId || m.ticker;
-        if (id && !seen.has(id)) { seen.set(id, m); newCount++; }
+      for (const m of markets) {
+        const id = m.ticker;
+        if (id && !seen.has(id)) {
+          seen.set(id, {
+            marketId: m.ticker,
+            title: m.title || m.subtitle || m.ticker,
+            yes: { price: m.yes_ask / 100 },
+          });
+          newCount++;
+        }
       }
-      console.log(`[discovery] Kalshi batch ${offset}: ${batch.length} fetched, ${newCount} new`);
-      // If no new markets, we've hit the end or are looping
-      if (newCount === 0) break;
-      await new Promise(r => setTimeout(r, 1500));
+      console.log(`[discovery] Kalshi page ${i}: ${markets.length} fetched, ${newCount} new (total: ${seen.size})`);
+      if (newCount === 0 || !data.cursor) break;
+      cursor = data.cursor;
+      await new Promise(r => setTimeout(r, 1000));
     } catch (e) {
-      console.log(`[discovery] Kalshi fetch error at offset ${offset}: ${e.message}`);
+      console.log(`[discovery] Kalshi fetch error: ${e.message}`);
       break;
     }
   }
@@ -190,7 +218,11 @@ export async function runDiscovery() {
   // Already-configured tickers
   const existingTickers = new Set(config.markets.map(m => m.kalshiTicker));
   const existingCandidates = loadCandidates();
-  const dismissedIds = new Set(existingCandidates.filter(c => c.status === 'dismissed').map(c => c.id));
+  const dismissedIds = loadDismissedIds();
+  // Also include any dismissed from candidates file
+  for (const c of existingCandidates) {
+    if (c.status === 'dismissed') dismissedIds.add(c.id);
+  }
 
   // Extract keywords for all poly markets
   const polyWithKw = polyMarkets.map(p => ({
@@ -236,7 +268,7 @@ export async function runDiscovery() {
       bestPerPolySlug.set(bestMatch.slug, {
         score: bestScore,
         ticker, kalshiTitle, bestMatch,
-        kalshiPrice: km.yes?.price ?? km.outcomes?.[0]?.price ?? null,
+        kalshiPrice: km.yes?.price ?? null,
       });
     }
   }
@@ -328,11 +360,15 @@ export function approveCandidate(id) {
  * Dismiss a candidate — won't show up again.
  */
 export function dismissCandidate(id) {
+  // Always save to persistent dismissed file
+  saveDismissedId(id);
+
+  // Also update candidates file if present
   const candidates = loadCandidates();
   const c = candidates.find(x => x.id === id);
-  if (!c) return { error: 'Candidate not found' };
-
-  c.status = 'dismissed';
-  saveCandidates(candidates);
+  if (c) {
+    c.status = 'dismissed';
+    saveCandidates(candidates);
+  }
   return { success: true };
 }
