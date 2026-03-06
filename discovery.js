@@ -101,40 +101,37 @@ function matchScore(kw1, kw2) {
  */
 async function fetchKalshiMarkets() {
   const client = getKalshiClient();
-  const markets = [];
+  const seen = new Map();
 
-  // Fetch in batches
-  let cursor = null;
-  for (let i = 0; i < 20; i++) {  // max 20 pages
-    const params = { limit: 100, status: 'open' };
-    if (cursor) params.cursor = cursor;
-    const batch = await client.fetchMarkets(params);
-    if (!batch.length) break;
-    markets.push(...batch);
-    // pmxt may not return a cursor; stop if we got fewer than limit
-    if (batch.length < 100) break;
-    await new Promise(r => setTimeout(r, 1500));
+  // pmxt doesn't support cursor pagination well, so just fetch one big batch
+  // and deduplicate by marketId
+  const params = { limit: 200, status: 'open' };
+  const batch = await client.fetchMarkets(params);
+  for (const m of batch) {
+    const id = m.marketId || m.ticker;
+    if (id && !seen.has(id)) seen.set(id, m);
   }
 
-  return markets;
+  return [...seen.values()];
 }
 
 /**
  * Fetch active Polymarket markets.
  */
 async function fetchPolymarkets() {
-  const markets = [];
-  // Fetch multiple pages
+  const seen = new Map();
   for (let offset = 0; offset < 2000; offset += 100) {
     const url = `https://gamma-api.polymarket.com/markets?limit=100&offset=${offset}&active=true&closed=false`;
     const resp = await fetch(url);
     if (!resp.ok) break;
     const data = await resp.json();
     if (!data.length) break;
-    markets.push(...data);
+    for (const m of data) {
+      if (m.slug && !seen.has(m.slug)) seen.set(m.slug, m);
+    }
     await new Promise(r => setTimeout(r, 500));
   }
-  return markets;
+  return [...seen.values()];
 }
 
 /**
@@ -180,6 +177,7 @@ export async function runDiscovery() {
   }));
 
   const candidates = [];
+  const seenIds = new Set();
 
   for (const km of kalshiMarkets) {
     const ticker = km.marketId || km.ticker;
@@ -207,6 +205,8 @@ export async function runDiscovery() {
 
     const id = `${ticker}::${bestMatch.slug}`;
     if (dismissedIds.has(id)) continue;
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
 
     const compareMode = guessCompareMode(kalshiTitle, bestMatch.question);
 
