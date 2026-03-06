@@ -5,7 +5,7 @@
  */
 
 import { config, loadApprovedMarkets } from './config.js';
-import { initClients, fetchMarketPrices } from './fetcher.js';
+import { initClients, fetchMarketPrices, getKalshiClient } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
 
@@ -103,6 +103,52 @@ async function poll() {
 
       console.log(`[exit] ${pos.marketLabel} | ${reason} | PnL: ${pos.realizedPnl >= 0 ? '+' : ''}$${pos.realizedPnl.toFixed(2)}`);
     }
+  }
+
+  // 3b. Auto-sell: check real Kalshi positions and sell any that are profitable
+  try {
+    const livePositions = await getKalshiClient().fetchPositions();
+    for (const pos of livePositions) {
+      if (pos.size <= 0) continue; // skip if no contracts held
+      if (pos.unrealizedPnL > 0) {
+        console.log(`[auto-sell] ${pos.marketId} ${pos.outcomeLabel} | ${pos.size} contracts | entry=${(pos.entryPrice*100).toFixed(1)}c current=${(pos.currentPrice*100).toFixed(1)}c | PnL: +$${pos.unrealizedPnL.toFixed(2)}`);
+
+        // Fetch market to get outcome object for the sell order
+        const markets = await getKalshiClient().fetchMarkets({ ticker: pos.marketId, limit: 1 });
+        if (!markets.length) { console.warn(`[auto-sell] Market not found: ${pos.marketId}`); continue; }
+
+        const market = markets[0];
+        const outcome = market.outcomes?.find(o => o.outcomeId === pos.outcomeId)
+          ?? market.outcomes?.find(o => o.label === pos.outcomeLabel);
+        if (!outcome) { console.warn(`[auto-sell] Outcome not found for ${pos.marketId}`); continue; }
+
+        // Sell at current price minus 1c to ensure fill
+        const sellPrice = Math.max(0.01, Math.round((pos.currentPrice - 0.01) * 100) / 100);
+
+        if (config.dryRun) {
+          console.log(`[auto-sell] DRY RUN: would sell ${pos.size} @ ${(sellPrice*100).toFixed(1)}c`);
+          continue;
+        }
+
+        try {
+          const order = await getKalshiClient().createOrder({
+            outcome,
+            side: 'sell',
+            type: 'limit',
+            amount: pos.size,
+            price: sellPrice,
+          });
+          console.log(`[auto-sell] SOLD ${pos.marketId} | ${JSON.stringify(order)}`);
+        } catch (e) {
+          console.error(`[auto-sell] Sell failed for ${pos.marketId}: ${e.message}`);
+        }
+        await sleep(1500); // rate limit
+      } else {
+        console.log(`[auto-sell] ${pos.marketId} ${pos.outcomeLabel} | PnL: $${pos.unrealizedPnL?.toFixed(2) ?? '?'} (holding)`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[auto-sell] Failed to check positions: ${e.message}`);
   }
 
   // 4. Enter new positions

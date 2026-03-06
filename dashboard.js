@@ -183,40 +183,6 @@ app.get('/api/balance', async (req, res) => {
   }
 });
 
-app.post('/api/positions/close', async (req, res) => {
-  try {
-    const { ticker, side, contracts, price } = req.body;
-    if (!ticker || !side || !contracts) {
-      return res.status(400).json({ error: 'Missing ticker, side, or contracts' });
-    }
-
-    const client = getKalshiClient();
-    const markets = await client.fetchMarkets({ ticker, limit: 1 });
-    if (!markets.length) return res.status(404).json({ error: 'Market not found' });
-
-    const market = markets[0];
-    const outcome = side === 'yes'
-      ? market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0]
-      : market.outcomes?.find(o => o.label === 'No')  ?? market.outcomes?.[1];
-
-    if (!outcome) return res.status(404).json({ error: 'Outcome not found' });
-
-    // Sell at specified price, or at 1c (market sell) if not specified
-    const sellPrice = price ?? 0.01;
-    const order = await client.createOrder({
-      outcome,
-      side: 'sell',
-      type: 'limit',
-      amount: contracts,
-      price: sellPrice,
-    });
-
-    res.json({ success: true, order });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 function getPublicConfig() {
   return {
     dryRun: config.dryRun,
@@ -758,52 +724,29 @@ function renderPositions() {
   let html = '';
   for (let i = 0; i < _positions.length; i++) {
     const p = _positions[i];
-    const ticker = p.ticker || p.marketTicker || p.marketId || '?';
-    const title = p.title || p.marketTitle || ticker;
-    const side = p.side || (p.quantity > 0 ? 'yes' : 'no');
-    const qty = Math.abs(p.quantity || p.contracts || p.amount || 0);
-    const avgPrice = p.averagePrice || p.avgPrice || p.price || null;
-    const cost = avgPrice != null ? (avgPrice * qty).toFixed(2) : '?';
+    const ticker = p.marketId || '?';
+    const side = p.outcomeLabel || (p.size > 0 ? 'YES' : 'NO');
+    const qty = Math.abs(p.size || 0);
+    const entry = p.entryPrice;
+    const current = p.currentPrice;
+    const cost = entry != null && qty ? (entry * qty).toFixed(2) : '?';
+    const pnl = p.unrealizedPnL;
+    const pnlClass = pnl > 0 ? 'high' : pnl < 0 ? 'bad' : '';
+    const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) : '?';
 
     html += '<div class="market-card">' +
-      '<div class="title">' + esc(title) + ' <span class="badge badge-buy">' + side.toUpperCase() + '</span></div>' +
+      '<div class="title">' + esc(ticker) + ' <span class="badge badge-buy">' + esc(side) + '</span></div>' +
       '<div class="metrics-row">' +
-        '<div class="metric"><span class="ml">Ticker: </span><span class="mv">' + esc(ticker) + '</span></div>' +
         '<div class="metric"><span class="ml">Contracts: </span><span class="mv">' + qty + '</span></div>' +
-        (avgPrice != null ? '<div class="metric"><span class="ml">Avg Price: </span><span class="mv">' + (avgPrice * 100).toFixed(1) + 'c</span></div>' : '') +
+        (entry != null ? '<div class="metric"><span class="ml">Entry: </span><span class="mv">' + (entry * 100).toFixed(1) + 'c</span></div>' : '') +
+        (current != null ? '<div class="metric"><span class="ml">Current: </span><span class="mv">' + (current * 100).toFixed(1) + 'c</span></div>' : '') +
         '<div class="metric"><span class="ml">Cost: </span><span class="mv">$' + cost + '</span></div>' +
+        '<div class="metric"><span class="ml">P&L: </span><span class="mv ' + pnlClass + '">' + pnlStr + '</span></div>' +
       '</div>' +
-      '<div style="margin-top:8px;font-size:11px;color:#8b949e">Close this position on <a href="https://kalshi.com/portfolio" target="_blank" style="color:#58a6ff">kalshi.com/portfolio</a></div>' +
+      '<div style="margin-top:8px;font-size:11px;color:#8b949e">Close on <a href="https://kalshi.com/portfolio" target="_blank" style="color:#58a6ff">kalshi.com/portfolio</a></div>' +
     '</div>';
   }
   grid.innerHTML = html;
-}
-
-async function closePosition(idx) {
-  const p = _positions[idx];
-  if (!p) return;
-  const ticker = p.ticker || p.marketTicker || p.marketId;
-  const side = p.side || (p.quantity > 0 ? 'yes' : 'no');
-  const qty = Math.abs(p.quantity || p.contracts || p.amount || 0);
-
-  if (!confirm('Close ' + qty + ' ' + side.toUpperCase() + ' contracts of ' + ticker + ' at market price?')) return;
-
-  try {
-    const resp = await fetch('/api/positions/close', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ticker, side, contracts: qty }),
-    });
-    const result = await resp.json();
-    if (result.error) {
-      alert('Close failed: ' + result.error);
-    } else {
-      alert('Position closed successfully');
-      loadPositions();
-    }
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
