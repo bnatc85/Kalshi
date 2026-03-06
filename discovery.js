@@ -105,7 +105,7 @@ async function fetchKalshiMarkets() {
 
   // Fetch in batches
   let cursor = null;
-  for (let i = 0; i < 5; i++) {  // max 5 pages
+  for (let i = 0; i < 20; i++) {  // max 20 pages
     const params = { limit: 100, status: 'open' };
     if (cursor) params.cursor = cursor;
     const batch = await client.fetchMarkets(params);
@@ -125,7 +125,7 @@ async function fetchKalshiMarkets() {
 async function fetchPolymarkets() {
   const markets = [];
   // Fetch multiple pages
-  for (let offset = 0; offset < 500; offset += 100) {
+  for (let offset = 0; offset < 2000; offset += 100) {
     const url = `https://gamma-api.polymarket.com/markets?limit=100&offset=${offset}&active=true&closed=false`;
     const resp = await fetch(url);
     if (!resp.ok) break;
