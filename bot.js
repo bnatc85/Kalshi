@@ -343,7 +343,11 @@ async function poll() {
         continue;
       }
 
-      if (bestBid < minSellPrice) {
+      // If bid is >= 95c, sell immediately — event is nearly resolved,
+      // take profit now rather than waiting for settlement
+      if (bestBid >= 0.95) {
+        console.log(`[auto-sell]   -> bid ${(bestBid*100).toFixed(0)}c >= 95c — selling (near-certain outcome)`);
+      } else if (bestBid < minSellPrice) {
         const gap = ((minSellPrice - bestBid) * 100).toFixed(1);
         console.log(`[auto-sell]   -> bid ${gap}c below min sell price, holding`);
         continue;
