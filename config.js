@@ -16,6 +16,9 @@ export const config = {
   maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '999'),
   pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '60'),
   exitConvergenceBps: parseInt(process.env.EXIT_CONVERGENCE_BPS || '50'),
+  // Min sell price (in cents) for positions with no known entry price (e.g. manual buys).
+  // Set to 0 to sell at any bid. Default 1 = sell at any bid >= 1c.
+  manualPositionMinSellCents: parseInt(process.env.MANUAL_POSITION_MIN_SELL_CENTS || '1'),
 
   // Markets to watch
   // polySlug: the slug from Polymarket's gamma API

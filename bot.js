@@ -261,8 +261,9 @@ async function poll() {
       } else if (isAccidentalPosition) {
         minSellPrice = 0.01;
       } else {
-        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price, holding`);
-        continue;
+        // No entry price known (e.g. manual buy) — sell at configurable floor
+        minSellPrice = config.manualPositionMinSellCents / 100;
+        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price (manual buy?), minSell=${(minSellPrice*100).toFixed(1)}c`);
       }
 
       const entrySource = savedTrade ? 'ledger' : (pos.entryPrice > 0 ? 'api' : '?');
