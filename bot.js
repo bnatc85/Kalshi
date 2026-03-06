@@ -152,8 +152,27 @@ async function poll() {
   // 3b. Auto-sell: check real Kalshi positions, sell if bid > entry price
   try {
     const livePositions = await getKalshiClient().fetchPositions();
+
+    // Fetch open orders to skip positions that already have pending sells
+    let openSellTickers = new Set();
+    try {
+      const openOrders = await getKalshiClient().fetchOpenOrders();
+      for (const o of openOrders) {
+        if (o.side === 'sell') openSellTickers.add(o.marketId);
+      }
+    } catch (e) {
+      // If we can't fetch orders, proceed but log it
+      console.warn(`[auto-sell] Could not fetch open orders: ${e.message}`);
+    }
+
     for (const pos of livePositions) {
       if (pos.size <= 0) continue;
+
+      // Skip if there's already a pending sell order for this market
+      if (openSellTickers.has(pos.marketId)) {
+        console.log(`[auto-sell] ${pos.marketId}: already has pending sell order, skipping`);
+        continue;
+      }
 
       const ticker = pos.marketId;
 
@@ -211,17 +230,12 @@ async function poll() {
           const yesBids = ob.yes || [];
           const noBids = ob.no || [];
 
+          // Only use direct bids — someone actually willing to buy our side.
+          // Cross-side inference is unreliable (a 1c NO bid ≠ a 99c YES buyer).
           if (side === 'yes' && yesBids.length) {
             bestBid = yesBids[yesBids.length - 1][0] / 100;
           } else if (side === 'no' && noBids.length) {
             bestBid = noBids[noBids.length - 1][0] / 100;
-          }
-          // If no direct bids, infer from the other side
-          // YES bid ≈ 1 - lowest NO price (best NO ask)
-          if (bestBid == null && side === 'yes' && noBids.length) {
-            bestBid = Math.round((1 - noBids[0][0] / 100) * 100) / 100;
-          } else if (bestBid == null && side === 'no' && yesBids.length) {
-            bestBid = Math.round((1 - yesBids[0][0] / 100) * 100) / 100;
           }
 
           console.log(`[auto-sell] ${ticker} book: yesBids=${yesBids.length} noBids=${noBids.length} bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}`);
