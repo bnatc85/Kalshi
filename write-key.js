@@ -1,0 +1,32 @@
+import fs from 'fs';
+const key = [
+'-----BEGIN RSA PRIVATE KEY-----',
+'MIIEpAIBAAKCAQEAtuj1OBzboX4Q2d6Yp3TPstt1oLytVt7FTsS5+GDigAN+d9Yq',
+'hHRGMNtdghs8XMJ1ZSrgjTVSUlj5zBWOKeNPWjPkaeDKFhEQjIKHJag7nR7IKFe3',
+'gplKpF13BB3+AUMyTmGE7nljc+adBeg0unrAQ7P70E5mYnqM9chcz4lAfK5xtvbJ',
+'5k5ZHYLBBR3tuIciqPPqnq+dNktVYf7JOOeu4da/++jcleKdZbXxHWh0VYTWKixl',
+'5R1O7uvV6hAMZQUWzsV1smgQOwiKnvD0k2J6VfmKWvbtFy429yG941dE3ywkVZ+o',
+'AvPf+HBjayPsXs1BiTcXkDIYfwaOUH9ip+c5LwIDAQABAoIBAAieUW+jbHXfisu5',
+'QVgimObEkHZSbZh6RrG/c0PQzNtbTso2vSogkG4c5/sJbX6xavapXotIx+g5aQvE',
+'uD4hB8woRcr3XI5Nn4n/XH7ZvnVYzfWYrHzq3CmCfekjwKQulmA7GBhkf9smMp/k',
+'oRdoUUbfZC4cg5aAT8QE/NqKjQ9S1H4JdVaimkBeZCHb2SkC2FjevTC8WgMH/ps9',
+'Go+Pv1+KKNcAycFPoQtT9gMldb1nXPks/oMWeTnQVyhtzUmQfkE8L7Xgzp5Qhu1L',
+'Y4hGFXjHt6IxAeircvmexowJ+tthR1WdXVY11Se8mDlqUTqCx/3kcUDBiSRm8zAV',
+'aNQ+swECgYEA411/ZRBRCX8B0+drByICNtmUimwY7pCh+Q8PsgOJ00E1Wy+o9ssl',
+'OnG+2aY9qoFctGBgJ0G3sjkn+gXuf7GoXNR1SimqD7UcHGYpJvdjq7oeNKYtg6rM',
+'QoiiUhSgfAKzSRWLjQzgGCUspMsAgcKUqmhOi+/ikuJMj7ZwdAEmv7cCgYEAzfIs',
+'1ZMCiw/cE4/F4jSx6C+dNx86RJWUAIhYuU8KYafMeJkMGqzHzXwsCZyusbc3MFWS',
+'kjI8zG//d66pso5oBB1C09GnFH4JLWhW/Q6Y2/ec9WHVAnyEzYuIsTYhp0GZysMB',
+'SmqKN3JKYUcOoz8J9T+2Nk3XUrc/VZAPhRA94kkCgYBBwMNb7ekRrvpPVwi7ylkL',
+'lccAdRyMuaUuCu4GFEHip2QP1+usW7mLemOwPARvb/Pockq8b6P5VdA63UZJBY7k',
+'McktxnjZDA5yJBVYoIjhm/SqUziscFOcFjmjNTXoRzukMifmhce1E+MiUVb3L9eg',
+'pIO6sog65Fkx4pgI5GBZZwKBgQCcQS57LPs0/2d/AAqnwktpWxbxh6Px/Xs5nDmU',
+'/79ksKeWqKhiZM2Dvr663EI/XD9nUMXQXoV6p08xQzhF3X5WAM1/YQZfqfDUnuHB',
+'Rp375zcThpLTPB6WxVOFAQkvmbpR+Pq1t3f+8Zw1inA0s9OeXCSntw+0FozbIl5k',
+'GxqY4QKBgQCcmp9YjweD4L3sKAOVl2TYTAVYUhfPszcXgBFPo/714ILYGhwVQsmw',
+'I6dulDHkGqO4DKmSdlnMcw/7vWqKnOp32CEE2Xti6mo1/m2r+pkPsskWoiQ567IU',
+'Xjjjtvi0wn1AwH62cznxQzL5HcNCmXnGt66roYYQvBwKdsW0VOrMKQ==',
+'-----END RSA PRIVATE KEY-----',
+].join('\n') + '\n';
+fs.writeFileSync('/tmp/old.pem', key);
+console.log('Key written to /tmp/old.pem');
