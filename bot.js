@@ -184,6 +184,15 @@ async function poll() {
     for (const rp of (rawPositions?.market_positions || [])) {
       rawMap.set(rp.ticker || rp.market_ticker, rp);
     }
+    // Debug: dump raw position fields so we can identify the side indicator
+    if (rawPositions?.market_positions?.length) {
+      const sample = rawPositions.market_positions[0];
+      console.log(`[auto-sell] RAW POSITION FIELDS: ${JSON.stringify(Object.keys(sample))}`);
+      // Log first 3 positions with key fields
+      for (const rp of rawPositions.market_positions.slice(0, 3)) {
+        console.log(`[auto-sell] RAW: ${rp.ticker || rp.market_ticker} position=${rp.position} exposure=${rp.market_exposure} side=${rp.side} direction=${rp.direction} quantity=${rp.quantity} yes=${rp.yes_sub_total} no=${rp.no_sub_total}`);
+      }
+    }
 
     for (const pos of livePositions) {
       if (pos.size <= 0) continue;
