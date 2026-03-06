@@ -319,23 +319,6 @@ async function poll() {
         closeTrade(ticker, sellPrice, pnl);
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
-        // Fallback: try pmxtjs createOrder in case callApi format is wrong
-        try {
-          console.log(`[auto-sell]   -> trying pmxtjs createOrder fallback...`);
-          const order = await getKalshiClient().createOrder({
-            outcome,
-            side: 'sell',
-            type: 'limit',
-            amount: sellQty,
-            price: sellPrice,
-          });
-          console.log(`[auto-sell]   -> SOLD (fallback): ${JSON.stringify(order)}`);
-          const pnl = entry ? (sellPrice - entry) * sellQty : null;
-          if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
-          closeTrade(ticker, sellPrice, pnl);
-        } catch (e2) {
-          console.error(`[auto-sell]   -> fallback also failed: ${e2.message}`);
-        }
       }
       await sleep(1500);
     }

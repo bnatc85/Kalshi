@@ -59,21 +59,20 @@ export async function enterPosition(signal, marketConfig, contracts) {
 
     console.log(`  Market data: id=${market.marketId} outcomes=${JSON.stringify(market.outcomes?.map(o => ({label: o.label, id: o.outcomeId})))}`);
 
-    const outcome = side === 'yes'
-      ? market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0]
-      : market.outcomes?.find(o => o.label === 'No')  ?? market.outcomes?.[1];
-
-    if (!outcome) throw new Error(`Outcome "${side}" not found in ${JSON.stringify(market.outcomes)}`);
-
-    console.log(`  Placing order: outcome=${outcome.outcomeId} side=buy type=limit price=${limitPrice} amount=${contracts}`);
-
-    const order = await getKalshiClient().createOrder({
-      outcome,
-      side: 'buy',
+    // Use Kalshi REST API directly via callApi (pmxtjs createOrder is broken)
+    const kalshiOrder = {
+      ticker: marketConfig.kalshiTicker,
+      action: 'buy',
+      side,
       type: 'limit',
-      amount: contracts,
-      price: limitPrice,
-    });
+      count: contracts,
+      ...(side === 'yes'
+        ? { yes_price: Math.round(limitPrice * 100) }
+        : { no_price: Math.round(limitPrice * 100) }),
+    };
+    console.log(`  Placing order: ${JSON.stringify(kalshiOrder)}`);
+
+    const order = await getKalshiClient().callApi('CreateOrder', kalshiOrder);
 
     console.log(`  Order placed: ${JSON.stringify(order)}`);
     return { success: true, dryRun: false, order };
@@ -94,29 +93,19 @@ export async function exitPosition(position, marketConfig) {
   if (config.dryRun) return { success: true, dryRun: true };
 
   try {
-    const markets = await fetchKalshiMarket(marketConfig.kalshiTicker);
-    if (!markets.length) throw new Error(`Market not found: ${marketConfig.kalshiTicker}`);
-
-    const market = markets[0];
-
-    if (market.marketId !== marketConfig.kalshiTicker) {
-      throw new Error(`WRONG MARKET: asked for ${marketConfig.kalshiTicker}, got ${market.marketId}`);
-    }
-
-    const outcome = position.tradeSide === 'yes'
-      ? market.outcomes.find(o => o.label === 'Yes') ?? market.outcomes[0]
-      : market.outcomes.find(o => o.label === 'No')  ?? market.outcomes[1];
-
-    if (!outcome) throw new Error(`Outcome "${position.tradeSide}" not found`);
-
-    // Sell at 1c below current to ensure fill
-    const order = await getKalshiClient().createOrder({
-      outcome,
-      side: 'sell',
+    const side = position.tradeSide;
+    const sellQty = Math.min(position.contracts, MAX_CONTRACTS);
+    const kalshiOrder = {
+      ticker: marketConfig.kalshiTicker,
+      action: 'sell',
+      side,
       type: 'limit',
-      amount: position.contracts,
-      price: 1,  // sell at 1c to ensure fill (market sell equivalent)
-    });
+      count: sellQty,
+      ...(side === 'yes' ? { yes_price: 1 } : { no_price: 1 }),  // 1c to ensure fill
+    };
+    console.log(`  Exit order: ${JSON.stringify(kalshiOrder)}`);
+
+    const order = await getKalshiClient().callApi('CreateOrder', kalshiOrder);
 
     console.log(`  Exit order placed: ${JSON.stringify(order)}`);
     return { success: true, order };
