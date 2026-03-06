@@ -131,16 +131,27 @@ async function poll() {
         continue;
       }
 
-      // Determine which outcome we hold: try outcomeId match first,
-      // then fall back to YES (Kalshi positions default to YES side)
-      let outcome = market.outcomes?.find(o => o.outcomeId === pos.outcomeId);
-      let side = outcome?.label?.toLowerCase() ?? 'yes';
-      if (!outcome) {
-        outcome = market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0];
-        side = 'yes';
+      // Determine which outcome we hold.
+      // pmxt sets outcomeId to the ticker for both position and market outcomes,
+      // and labels are things like "4.50%", "Mars", "Reward" — NOT "Yes"/"No".
+      // On Kalshi, the first outcome = YES side, second = NO side.
+      // Default to YES (index 0) since that's what most positions are.
+      const outcomes = market.outcomes || [];
+      let outcome = outcomes[0]; // default to first outcome (YES side)
+      let side = 'yes';
+
+      // If there are multiple outcomes and we can match by outcomeId, figure out
+      // which index we're at to determine yes vs no
+      if (outcomes.length > 1) {
+        const matchIdx = outcomes.findIndex(o => o.outcomeId === pos.outcomeId);
+        if (matchIdx === 1) {
+          outcome = outcomes[1];
+          side = 'no';
+        }
       }
+
       if (!outcome) { console.warn(`[auto-sell] ${ticker}: no outcomes found`); continue; }
-      console.log(`[auto-sell] ${ticker}: verified market=${market.marketId}, outcome=${outcome.outcomeId} (${outcome.label})`);
+      console.log(`[auto-sell] ${ticker}: market=${market.marketId}, side=${side.toUpperCase()}, outcome=${outcome.outcomeId} (${outcome.label})`);
 
       // Fetch order book via Kalshi REST API directly (pmxt's fetchOrderBook
       // fails with DECODER error due to key format issues)
@@ -150,23 +161,26 @@ async function poll() {
         const obResp = await fetch(obUrl);
         if (obResp.ok) {
           const obData = await obResp.json();
-          console.log(`[auto-sell] ${ticker} orderbook raw: ${JSON.stringify(obData).substring(0, 300)}`);
           const ob = obData.orderbook || obData;
           // Kalshi orderbook: "yes" and "no" arrays of [price_cents, quantity]
+          // sorted ASCENDING — best bid (highest price) is the LAST element
           const yesBids = ob.yes || [];
           const noBids = ob.no || [];
+
           if (side === 'yes' && yesBids.length) {
-            bestBid = yesBids[0][0] / 100;
+            bestBid = yesBids[yesBids.length - 1][0] / 100;
           } else if (side === 'no' && noBids.length) {
-            bestBid = noBids[0][0] / 100;
+            bestBid = noBids[noBids.length - 1][0] / 100;
           }
           // If no direct bids, infer from the other side
+          // YES bid ≈ 1 - lowest NO price (best NO ask)
           if (bestBid == null && side === 'yes' && noBids.length) {
-            // Best YES bid ≈ 1 - highest NO price (since YES + NO = $1)
             bestBid = Math.round((1 - noBids[0][0] / 100) * 100) / 100;
           } else if (bestBid == null && side === 'no' && yesBids.length) {
             bestBid = Math.round((1 - yesBids[0][0] / 100) * 100) / 100;
           }
+
+          console.log(`[auto-sell] ${ticker} book: yesBids=${yesBids.length} noBids=${noBids.length} bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}`);
         } else {
           console.warn(`[auto-sell] ${ticker} orderbook HTTP ${obResp.status}`);
         }
