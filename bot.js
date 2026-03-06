@@ -58,7 +58,7 @@ const closedPnl = [];
 
 export async function startBot() {
   console.log('\n========================================');
-  console.log('  Signal BonBon — Kalshi-Only Divergence Bot');
+  console.log('  Signal BonBon — Kalshi-Only Bot');
   console.log('========================================');
   console.log(`Mode:           ${config.dryRun ? 'DRY RUN' : 'LIVE'}`);
   console.log(`Poll interval:  ${config.pollIntervalSeconds}s`);

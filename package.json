@@ -1,7 +1,7 @@
 {
   "name": "signal-bonbon",
   "version": "2.0.0",
-  "description": "Signal BonBon — Kalshi divergence trading bot using Polymarket as a price signal",
+  "description": "Signal BonBon — Kalshi-Only Bot",
   "type": "module",
   "main": "index.js",
   "scripts": {

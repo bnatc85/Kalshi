@@ -1,5 +1,5 @@
 /**
- * Web dashboard for Signal BonBon bot.
+ * Web dashboard for Signal BonBon — Kalshi-Only Bot.
  * Shows live market divergences, order book depth, and trade history.
  *
  * Run: npm run dashboard
