@@ -248,10 +248,27 @@ async function poll() {
       }
       await sleep(1500);
 
-      // Look up entry price: first from our trade ledger, then from API
+      // Look up entry price: trade ledger → API → Kalshi fills history
       const savedTrade = getOpenTrade(ticker);
-      const entry = savedTrade?.entryPrice ?? (pos.entryPrice > 0 ? pos.entryPrice : null);
+      let entry = savedTrade?.entryPrice ?? (pos.entryPrice > 0 ? pos.entryPrice : null);
       const isAccidentalPosition = ticker === 'KXFED-26JUN-T4.50';
+
+      // If no entry price known, query Kalshi fill history to find avg buy price
+      if (entry == null && !isAccidentalPosition) {
+        try {
+          const fills = await getKalshiClient().callApi('GetFills', { ticker, limit: 100 });
+          const buyFills = (fills?.fills || []).filter(f => f.action === 'buy');
+          if (buyFills.length) {
+            const totalCost = buyFills.reduce((s, f) => s + (f.yes_price || f.no_price || 0) * (f.count || 1), 0);
+            const totalQty = buyFills.reduce((s, f) => s + (f.count || 1), 0);
+            entry = totalCost / totalQty / 100; // convert cents to decimal
+            console.log(`[auto-sell] ${ticker}: found entry from ${buyFills.length} fills: avg ${(entry*100).toFixed(1)}c`);
+          }
+        } catch (e) {
+          console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
+        }
+        await sleep(500);
+      }
 
       let minSellPrice;
       if (entry != null && entry > 0) {
@@ -261,9 +278,9 @@ async function poll() {
       } else if (isAccidentalPosition) {
         minSellPrice = 0.01;
       } else {
-        // No entry price known (e.g. manual buy) — sell at configurable floor
-        minSellPrice = config.manualPositionMinSellCents / 100;
-        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price (manual buy?), minSell=${(minSellPrice*100).toFixed(1)}c`);
+        // Still no entry price — hold, don't sell blind
+        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price found, holding`);
+        continue;
       }
 
       const entrySource = savedTrade ? 'ledger' : (pos.entryPrice > 0 ? 'api' : '?');
