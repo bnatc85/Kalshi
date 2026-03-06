@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'fs';
 
 export const config = {
   // Credentials — Kalshi only (Polymarket is read-only public data)
@@ -87,6 +88,34 @@ export const config = {
     },
   ],
 };
+
+/**
+ * Load approved candidates from candidates.json and merge into config.markets.
+ * Called by the bot on each poll cycle so new approvals are picked up live.
+ */
+export function loadApprovedMarkets() {
+  try {
+    const data = JSON.parse(fs.readFileSync('./candidates.json', 'utf8'));
+    const approved = data.filter(c => c.status === 'approved');
+    let added = 0;
+    for (const c of approved) {
+      if (config.markets.find(m => m.kalshiTicker === c.kalshiTicker)) continue;
+      const label = c.kalshiTitle.length > 40
+        ? c.kalshiTitle.substring(0, 37) + '...'
+        : c.kalshiTitle;
+      config.markets.push({
+        label,
+        kalshiTicker: c.kalshiTicker,
+        polySlug: c.polySlug,
+        compareMode: c.compareMode,
+      });
+      added++;
+    }
+    if (added) console.log(`[config] Loaded ${added} approved markets (total: ${config.markets.length})`);
+  } catch {
+    // No candidates file yet — that's fine
+  }
+}
 
 export function validateConfig() {
   if (!config.kalshi.apiKey || config.kalshi.apiKey === 'your_api_key_id_here') {

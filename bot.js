@@ -4,7 +4,7 @@
  * trades on Kalshi only using Polymarket as a price signal.
  */
 
-import { config } from './config.js';
+import { config, loadApprovedMarkets } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
@@ -33,6 +33,9 @@ export async function startBot() {
 }
 
 async function poll() {
+  // Pick up any newly approved markets from the dashboard
+  loadApprovedMarkets();
+
   const timestamp = new Date().toLocaleTimeString();
   console.log(`\n--- ${timestamp} ---`);
 

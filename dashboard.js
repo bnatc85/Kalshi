@@ -6,12 +6,13 @@
  */
 
 import express from 'express';
-import { validateConfig, config } from './config.js';
+import { validateConfig, config, loadApprovedMarkets } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
 import { findDivergence } from './arbitrage.js';
 import { runDiscovery, loadCandidates, approveCandidate, dismissCandidate } from './discovery.js';
 
 validateConfig();
+loadApprovedMarkets();
 initClients();
 
 const app = express();
