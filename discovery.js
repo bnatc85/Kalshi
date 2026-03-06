@@ -123,10 +123,9 @@ function matchScore(kw1, kw2) {
     }
   }
   // Must have at least 2 specific keywords in common
-  // (e.g. a person name + country, or event + date)
+  // (e.g. a person name + topic, or event + date)
   // A single shared word like "Denver" or "North Carolina" is not enough
   if (specificOverlap < 2) return 0;
-  if (overlap < 3) return 0;
 
   const union = new Set([...set1, ...set2]).size;
   return (overlap / union) * (1 + specificOverlap * 0.4);
@@ -327,9 +326,11 @@ export async function runDiscovery() {
     }
   }
 
-  // Also keep dismissed ones so they stay dismissed
+  // Preserve approved, pending, and dismissed candidates even if they
+  // didn't appear in the latest scan (e.g., market delisted or match
+  // score changed). Never silently drop a candidate the user already saw.
   for (const ec of existingCandidates) {
-    if (ec.status === 'dismissed' && !merged.find(m => m.id === ec.id)) {
+    if (!merged.find(m => m.id === ec.id)) {
       merged.push(ec);
     }
   }
