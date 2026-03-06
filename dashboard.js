@@ -168,6 +168,8 @@ app.post('/api/candidates/dismiss', (req, res) => {
 app.get('/api/positions', async (req, res) => {
   try {
     const positions = await getKalshiClient().fetchPositions();
+    // Log raw data once so we can see exact field names/values
+    if (positions.length) console.log('[positions] Raw sample:', JSON.stringify(positions[0]));
     res.json(positions);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -727,10 +729,18 @@ function renderPositions() {
     const ticker = p.marketId || '?';
     const side = p.outcomeLabel || (p.size > 0 ? 'YES' : 'NO');
     const qty = Math.abs(p.size || 0);
-    const entry = p.entryPrice;
-    const current = p.currentPrice;
-    const cost = entry != null && qty ? (entry * qty).toFixed(2) : '?';
-    const pnl = p.unrealizedPnL;
+    const entry = p.entryPrice || null;
+    const current = p.currentPrice || null;
+    const pnl = p.unrealizedPnL ?? null;
+    // Derive cost: entryPrice * qty, or from currentValue - PnL
+    let cost = null;
+    if (entry && qty) {
+      cost = entry * qty;
+    } else if (current != null && pnl != null && qty) {
+      cost = (current * qty) - pnl;
+    }
+    const costStr = cost != null ? '$' + cost.toFixed(2) : '?';
+    const entryStr = entry ? (entry * 100).toFixed(1) + 'c' : (cost != null && qty ? (cost / qty * 100).toFixed(1) + 'c' : '?');
     const pnlClass = pnl > 0 ? 'high' : pnl < 0 ? 'bad' : '';
     const pnlStr = pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) : '?';
 
@@ -738,9 +748,9 @@ function renderPositions() {
       '<div class="title">' + esc(ticker) + ' <span class="badge badge-buy">' + esc(side) + '</span></div>' +
       '<div class="metrics-row">' +
         '<div class="metric"><span class="ml">Contracts: </span><span class="mv">' + qty + '</span></div>' +
-        (entry != null ? '<div class="metric"><span class="ml">Entry: </span><span class="mv">' + (entry * 100).toFixed(1) + 'c</span></div>' : '') +
+        '<div class="metric"><span class="ml">Entry: </span><span class="mv">' + entryStr + '</span></div>' +
         (current != null ? '<div class="metric"><span class="ml">Current: </span><span class="mv">' + (current * 100).toFixed(1) + 'c</span></div>' : '') +
-        '<div class="metric"><span class="ml">Cost: </span><span class="mv">$' + cost + '</span></div>' +
+        '<div class="metric"><span class="ml">Cost: </span><span class="mv">' + costStr + '</span></div>' +
         '<div class="metric"><span class="ml">P&L: </span><span class="mv ' + pnlClass + '">' + pnlStr + '</span></div>' +
       '</div>' +
       '<div style="margin-top:8px;font-size:11px;color:#8b949e">Close on <a href="https://kalshi.com/portfolio" target="_blank" style="color:#58a6ff">kalshi.com/portfolio</a></div>' +
