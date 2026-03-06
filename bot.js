@@ -132,7 +132,11 @@ async function poll() {
       await sleep(1500);
 
       const entry = pos.entryPrice;
-      const minSellPrice = Math.round((entry + 0.01) * 100) / 100; // at least 1c profit per contract
+
+      // For the accidental KXFED-26JUN-T4.50 position: accept up to $5 loss to exit
+      const isAccidentalPosition = ticker === 'KXFED-26JUN-T4.50';
+      const maxLossPerContract = isAccidentalPosition ? 0.05 : -0.01; // 5c loss vs 1c profit
+      const minSellPrice = Math.round((entry - maxLossPerContract) * 100) / 100;
 
       console.log(
         `[auto-sell] ${ticker} ${pos.outcomeLabel} | ${pos.size} contracts | ` +
@@ -151,11 +155,11 @@ async function poll() {
         continue;
       }
 
-      // Bid is above entry + 1c — we can sell profitably
-      // Place limit sell at the best bid price to fill immediately
+      // Bid is at or above our minimum sell price — sell now
       const sellPrice = bestBid;
-      const profit = ((sellPrice - entry) * pos.size).toFixed(2);
-      console.log(`[auto-sell]   -> PROFITABLE: selling ${pos.size} @ ${(sellPrice*100).toFixed(1)}c (profit ~$${profit})`);
+      const pnl = (sellPrice - entry) * pos.size;
+      const pnlStr = pnl >= 0 ? `profit +$${pnl.toFixed(2)}` : `loss -$${Math.abs(pnl).toFixed(2)}`;
+      console.log(`[auto-sell]   -> SELLING: ${pos.size} @ ${(sellPrice*100).toFixed(1)}c (${pnlStr})${isAccidentalPosition ? ' [EXIT: accidental position]' : ''}`);
 
       if (config.dryRun) {
         console.log(`[auto-sell]   -> DRY RUN: would sell`);
