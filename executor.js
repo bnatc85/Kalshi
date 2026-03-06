@@ -34,13 +34,17 @@ export async function enterPosition(signal, marketConfig, contracts) {
 
     if (!outcome) throw new Error(`Outcome "${side}" not found in ${JSON.stringify(market.outcomes)}`);
 
-    console.log(`  Placing order: outcomeId=${outcome.outcomeId} side=buy type=market amount=${contracts}`);
+    // Use the outcome object directly (pmxt resolves marketId/outcomeId from it)
+    // Kalshi requires limit orders with a price
+    const limitPrice = Math.ceil(price * 100);  // cents, round up to ensure fill
+    console.log(`  Placing order: outcome=${outcome.outcomeId} side=buy type=limit price=${limitPrice}c amount=${contracts}`);
 
     const order = await getKalshiClient().createOrder({
-      outcomeId: outcome.outcomeId,
+      outcome,
       side: 'buy',
-      type: 'market',
+      type: 'limit',
       amount: contracts,
+      price: limitPrice,
     });
 
     console.log(`  Order placed: ${JSON.stringify(order)}`);
@@ -72,11 +76,13 @@ export async function exitPosition(position, marketConfig) {
 
     if (!outcome) throw new Error(`Outcome "${position.tradeSide}" not found`);
 
+    // Sell at 1c below current to ensure fill
     const order = await getKalshiClient().createOrder({
-      outcomeId: outcome.outcomeId,
+      outcome,
       side: 'sell',
-      type: 'market',
+      type: 'limit',
       amount: position.contracts,
+      price: 1,  // sell at 1c to ensure fill (market sell equivalent)
     });
 
     console.log(`  Exit order placed: ${JSON.stringify(order)}`);
