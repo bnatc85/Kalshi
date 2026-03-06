@@ -10,6 +10,7 @@ import { validateConfig, config, loadApprovedMarkets } from './config.js';
 import { initClients, fetchMarketPrices } from './fetcher.js';
 import { findDivergence } from './arbitrage.js';
 import { runDiscovery, loadCandidates, approveCandidate, dismissCandidate } from './discovery.js';
+import { getKalshiClient } from './fetcher.js';
 
 validateConfig();
 loadApprovedMarkets();
@@ -163,6 +164,59 @@ app.post('/api/candidates/dismiss', (req, res) => {
   res.json(result);
 });
 
+// Positions endpoints
+app.get('/api/positions', async (req, res) => {
+  try {
+    const positions = await getKalshiClient().fetchPositions();
+    res.json(positions);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/balance', async (req, res) => {
+  try {
+    const balance = await getKalshiClient().fetchBalance();
+    res.json(balance);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/positions/close', async (req, res) => {
+  try {
+    const { ticker, side, contracts, price } = req.body;
+    if (!ticker || !side || !contracts) {
+      return res.status(400).json({ error: 'Missing ticker, side, or contracts' });
+    }
+
+    const client = getKalshiClient();
+    const markets = await client.fetchMarkets({ ticker, limit: 1 });
+    if (!markets.length) return res.status(404).json({ error: 'Market not found' });
+
+    const market = markets[0];
+    const outcome = side === 'yes'
+      ? market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0]
+      : market.outcomes?.find(o => o.label === 'No')  ?? market.outcomes?.[1];
+
+    if (!outcome) return res.status(404).json({ error: 'Outcome not found' });
+
+    // Sell at specified price, or at 1c (market sell) if not specified
+    const sellPrice = price ?? 0.01;
+    const order = await client.createOrder({
+      outcome,
+      side: 'sell',
+      type: 'limit',
+      amount: contracts,
+      price: sellPrice,
+    });
+
+    res.json({ success: true, order });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 function getPublicConfig() {
   return {
     dryRun: config.dryRun,
@@ -307,6 +361,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <button class="btn" id="autoBtn" onclick="toggleAuto()">Auto: OFF</button>
     <span class="auto-label" id="autoLabel"></span>
     <span id="lastUpdate"></span>
+  </div>
+
+  <div class="section">
+    <h2>Open Positions (Kalshi)</h2>
+    <div class="controls" style="margin-bottom:12px">
+      <button class="btn" onclick="loadPositions()">Refresh Positions</button>
+      <span id="balanceDisplay" style="font-size:13px;color:#8b949e;margin-left:12px"></span>
+    </div>
+    <div id="positionsGrid" class="market-grid">
+      <div class="empty">Click "Refresh Positions" to load from Kalshi</div>
+    </div>
   </div>
 
   <div class="section">
@@ -655,9 +720,96 @@ function dismissMarket(idx) {
   }).catch(() => {});
 }
 
+// Positions
+let _positions = [];
+
+async function loadPositions() {
+  const grid = document.getElementById('positionsGrid');
+  grid.innerHTML = '<div class="empty"><span class="spinner"></span>Loading positions...</div>';
+  try {
+    const [posResp, balResp] = await Promise.all([
+      fetch('/api/positions'),
+      fetch('/api/balance'),
+    ]);
+    _positions = await posResp.json();
+    const balance = await balResp.json();
+
+    const balEl = document.getElementById('balanceDisplay');
+    if (balance && (balance.balance != null || balance.available != null)) {
+      const bal = balance.balance ?? balance.available ?? balance.cash ?? 0;
+      balEl.textContent = 'Balance: $' + (typeof bal === 'number' ? bal.toFixed(2) : bal);
+    }
+
+    renderPositions();
+  } catch (e) {
+    grid.innerHTML = '<div class="empty">Error loading positions: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderPositions() {
+  const grid = document.getElementById('positionsGrid');
+  if (!_positions.length) {
+    grid.innerHTML = '<div class="empty">No open positions on Kalshi</div>';
+    return;
+  }
+
+  let html = '';
+  for (let i = 0; i < _positions.length; i++) {
+    const p = _positions[i];
+    const ticker = p.ticker || p.marketTicker || p.marketId || '?';
+    const title = p.title || p.marketTitle || ticker;
+    const side = p.side || (p.quantity > 0 ? 'yes' : 'no');
+    const qty = Math.abs(p.quantity || p.contracts || p.amount || 0);
+    const avgPrice = p.averagePrice || p.avgPrice || p.price || null;
+    const cost = avgPrice != null ? (avgPrice * qty).toFixed(2) : '?';
+
+    html += '<div class="market-card">' +
+      '<div class="title">' + esc(title) + ' <span class="badge badge-buy">' + side.toUpperCase() + '</span></div>' +
+      '<div class="metrics-row">' +
+        '<div class="metric"><span class="ml">Ticker: </span><span class="mv">' + esc(ticker) + '</span></div>' +
+        '<div class="metric"><span class="ml">Contracts: </span><span class="mv">' + qty + '</span></div>' +
+        (avgPrice != null ? '<div class="metric"><span class="ml">Avg Price: </span><span class="mv">' + (avgPrice * 100).toFixed(1) + 'c</span></div>' : '') +
+        '<div class="metric"><span class="ml">Cost: </span><span class="mv">$' + cost + '</span></div>' +
+      '</div>' +
+      '<div style="margin-top:10px">' +
+        '<button class="btn" style="background:#3d0000;color:#ff6b6b;border-color:#ff6b6b;font-size:11px;padding:4px 12px" ' +
+          'onclick="closePosition(' + i + ')">Close Position (Market Sell)</button>' +
+      '</div>' +
+    '</div>';
+  }
+  grid.innerHTML = html;
+}
+
+async function closePosition(idx) {
+  const p = _positions[idx];
+  if (!p) return;
+  const ticker = p.ticker || p.marketTicker || p.marketId;
+  const side = p.side || (p.quantity > 0 ? 'yes' : 'no');
+  const qty = Math.abs(p.quantity || p.contracts || p.amount || 0);
+
+  if (!confirm('Close ' + qty + ' ' + side.toUpperCase() + ' contracts of ' + ticker + ' at market price?')) return;
+
+  try {
+    const resp = await fetch('/api/positions/close', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ticker, side, contracts: qty }),
+    });
+    const result = await resp.json();
+    if (result.error) {
+      alert('Close failed: ' + result.error);
+    } else {
+      alert('Position closed successfully');
+      loadPositions();
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); loadCandidates(); }).catch(() => {});
+fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); loadCandidates(); loadPositions(); }).catch(() => {});
 </script>
 </body>
 </html>`;

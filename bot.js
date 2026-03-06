@@ -111,7 +111,9 @@ async function poll() {
     const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
     if (alreadyOpen) continue;
 
-    const contracts = Math.floor(config.positionSizeUSD / sig.entryPrice);
+    // Use the limit price (entry + 1c buffer) for cost calculation
+    const limitPrice = Math.round((sig.entryPrice + 0.01) * 100) / 100;
+    const contracts = Math.floor(config.positionSizeUSD / limitPrice);
     if (contracts < 1) continue;
 
     const result = await enterPosition(sig, sig.market, contracts);

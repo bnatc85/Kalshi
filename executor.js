@@ -14,9 +14,17 @@ export async function enterPosition(signal, marketConfig, contracts) {
   const price = signal.entryPrice;
   const prefix = config.dryRun ? '[DRY RUN]' : '[LIVE]';
 
+  // Hard safety cap: never spend more than positionSizeUSD
+  const limitPrice = Math.round((price + 0.01) * 100) / 100;
+  const maxCost = limitPrice * contracts;
+  if (maxCost > config.positionSizeUSD * 1.05) {
+    console.error(`  BLOCKED: estimated cost $${maxCost.toFixed(2)} exceeds limit $${config.positionSizeUSD}`);
+    return { success: false, error: 'cost exceeds position size limit' };
+  }
+
   console.log(`\n${prefix} ENTER: ${marketConfig.label}`);
-  console.log(`  Side: BUY ${side.toUpperCase()} on Kalshi @ ${(price * 100).toFixed(1)}c`);
-  console.log(`  Contracts: ${contracts} | Cost: $${(price * contracts).toFixed(2)}`);
+  console.log(`  Side: BUY ${side.toUpperCase()} on Kalshi @ ${(price * 100).toFixed(1)}c (limit ${(limitPrice * 100).toFixed(1)}c)`);
+  console.log(`  Contracts: ${contracts} | Max cost: $${maxCost.toFixed(2)}`);
   console.log(`  Signal: Kalshi=${(signal.kalshiPrice * 100).toFixed(1)}c  Poly=${(signal.polyPrice * 100).toFixed(1)}c  Divergence=${signal.divergenceBps.toFixed(0)}bps`);
 
   if (config.dryRun) return { success: true, dryRun: true };

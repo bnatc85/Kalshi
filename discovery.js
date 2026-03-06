@@ -89,7 +89,15 @@ const GENERIC_WORDS = new Set([
   'july', 'august', 'september', 'october', 'november', 'december',
   // Too broad
   'united', 'states', 'world', 'national', 'international',
-  'round', 'final', 'season', 'game',
+  'round', 'final', 'season', 'game', 'games',
+  // Sports terms
+  'playoffs', 'championship', 'conference', 'division', 'league',
+  'nba', 'nfl', 'mlb', 'nhl', 'mls', 'ncaa', 'mvp', 'afc', 'nfc',
+  'make', 'team', 'player', 'coach', 'series', 'cup', 'bowl',
+  'super', 'stanley', 'title', 'seed', 'draft', 'trade',
+  // Politics terms that are too generic alone
+  'senate', 'governor', 'house', 'congress', 'race', 'democrats',
+  'republicans', 'democratic', 'republican', 'gop',
 ]);
 
 function isSpecific(word) {
@@ -114,10 +122,11 @@ function matchScore(kw1, kw2) {
       if (isSpecific(w)) specificOverlap++;
     }
   }
-  // Must have at least 1 specific keyword in common
-  // (e.g. a country name, person name, or date)
-  if (specificOverlap === 0) return 0;
-  if (overlap < 2) return 0;
+  // Must have at least 2 specific keywords in common
+  // (e.g. a person name + country, or event + date)
+  // A single shared word like "Denver" or "North Carolina" is not enough
+  if (specificOverlap < 2) return 0;
+  if (overlap < 3) return 0;
 
   const union = new Set([...set1, ...set2]).size;
   return (overlap / union) * (1 + specificOverlap * 0.4);
@@ -236,9 +245,16 @@ export async function runDiscovery() {
   // (avoids showing 10 variants of the same event)
   const bestPerPolySlug = new Map();
 
+  // Kalshi ticker prefixes for multi-leg parlays — these bundle multiple
+  // outcomes into one market and can never match a single Poly question
+  const PARLAY_PREFIXES = ['KXMVECROSSCATEGORY', 'KXMVESPORTS', 'KXMVEMULTI'];
+
   for (const km of kalshiMarkets) {
     const ticker = km.marketId || km.ticker;
     if (!ticker || existingTickers.has(ticker)) continue;
+
+    // Skip parlay / multi-leg markets
+    if (PARLAY_PREFIXES.some(p => ticker.startsWith(p))) continue;
 
     const kalshiTitle = km.title || km.question || ticker;
     const kKeywords = extractKeywords(kalshiTitle);
@@ -257,7 +273,7 @@ export async function runDiscovery() {
       }
     }
 
-    if (bestScore < 0.4 || !bestMatch) continue;
+    if (bestScore < 0.6 || !bestMatch) continue;
 
     const id = `${ticker}::${bestMatch.slug}`;
     if (dismissedIds.has(id)) continue;
