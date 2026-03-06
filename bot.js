@@ -168,9 +168,8 @@ async function poll() {
     let rawPositions = null;
     try {
       rawPositions = await getKalshiClient().callApi('GetPositions', { limit: 100, settlement_status: 'unsettled' });
-      if (rawPositions?.market_positions?.length) {
-        console.log(`[auto-sell] Raw position sample: ${JSON.stringify(rawPositions.market_positions[0])}`);
-      }
+      // Build lookup map for raw position data
+
     } catch (e) {
       console.warn(`[auto-sell] Raw positions API failed: ${e.message}`);
     }
@@ -288,16 +287,12 @@ async function poll() {
         entry = pos.entryPrice;
       }
 
-      // 3b. Raw Kalshi position data (may have avg price fields pmxt misses)
+      // 3b. Raw Kalshi position data — calculate avg entry from market_exposure / position
       if (entry == null) {
         const raw = rawMap.get(ticker);
-        if (raw) {
-          // Try various field names Kalshi might use
-          const avgCents = raw.market_average_price ?? raw.average_price ?? raw.realized_cost ?? null;
-          if (avgCents != null && avgCents > 0) {
-            entry = avgCents / 100;
-            console.log(`[auto-sell] ${ticker}: entry from raw position: ${(entry*100).toFixed(1)}c`);
-          }
+        if (raw && raw.market_exposure > 0 && raw.position > 0) {
+          entry = (raw.market_exposure / raw.position) / 100; // cents to decimal
+          console.log(`[auto-sell] ${ticker}: entry from Kalshi position: ${(entry*100).toFixed(1)}c (exposure=${raw.market_exposure}c / ${raw.position} contracts)`);
         }
       }
 
