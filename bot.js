@@ -248,23 +248,40 @@ async function poll() {
       }
       await sleep(1500);
 
-      // Look up entry price: trade ledger → API → Kalshi fills history
-      const savedTrade = getOpenTrade(ticker);
-      let entry = savedTrade?.entryPrice ?? (pos.entryPrice > 0 ? pos.entryPrice : null);
+      // Look up entry price: manual overrides → trade ledger → API → Kalshi fills
+      let entry = null;
       const isAccidentalPosition = ticker === 'KXFED-26JUN-T4.50';
 
-      // If no entry price known, query Kalshi fill history to find avg buy price
+      // 1. Manual entry prices (entry-prices.json, values in cents)
+      try {
+        const manual = JSON.parse(fs.readFileSync('./entry-prices.json', 'utf8'));
+        if (manual[ticker] != null) {
+          entry = manual[ticker] / 100; // cents to decimal
+        }
+      } catch {}
+
+      // 2. Trade ledger
+      if (entry == null) {
+        const savedTrade = getOpenTrade(ticker);
+        entry = savedTrade?.entryPrice ?? null;
+      }
+
+      // 3. Kalshi API position entry price
+      if (entry == null && pos.entryPrice > 0) {
+        entry = pos.entryPrice;
+      }
+
+      // 4. Kalshi fill history
       if (entry == null && !isAccidentalPosition) {
         try {
           const fills = await getKalshiClient().callApi('GetFills', { ticker, limit: 100 });
           const allFills = fills?.fills || [];
-          console.log(`[auto-sell] ${ticker}: GetFills returned ${allFills.length} fills${allFills.length ? ': ' + JSON.stringify(allFills.slice(0, 2)) : ''}`);
           const buyFills = allFills.filter(f => f.action === 'buy');
           if (buyFills.length) {
             const totalCost = buyFills.reduce((s, f) => s + (f.yes_price || f.no_price || 0) * (f.count || 1), 0);
             const totalQty = buyFills.reduce((s, f) => s + (f.count || 1), 0);
-            entry = totalCost / totalQty / 100; // convert cents to decimal
-            console.log(`[auto-sell] ${ticker}: found entry from ${buyFills.length} buy fills: avg ${(entry*100).toFixed(1)}c`);
+            entry = totalCost / totalQty / 100;
+            console.log(`[auto-sell] ${ticker}: entry from ${buyFills.length} fills: avg ${(entry*100).toFixed(1)}c`);
           }
         } catch (e) {
           console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
@@ -285,7 +302,7 @@ async function poll() {
         continue;
       }
 
-      const entrySource = savedTrade ? 'ledger' : (pos.entryPrice > 0 ? 'api' : '?');
+      const entrySource = entry != null ? 'found' : '?';
       console.log(
         `[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | ` +
         `entry=${entry != null ? (entry*100).toFixed(1)+'c' : '?'} (${entrySource})  ` +
