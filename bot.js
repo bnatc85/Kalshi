@@ -56,6 +56,16 @@ function getOpenTrade(ticker) {
 const positions = [];
 const closedPnl = [];
 
+// --- Sports momentum scanner ---
+// Price history: ticker -> [{price, time}]
+const priceHistory = new Map();
+const MOMENTUM_MIN_MOVE = 0.05;     // 5c move required
+const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
+const MOMENTUM_MIN_PRICE = 0.55;    // don't buy below 55c
+const MOMENTUM_MAX_PRICE = 0.70;    // don't buy above 70c
+const MOMENTUM_CONTRACTS = 1;       // test with 1 contract
+const MOMENTUM_MAX_HOURS = 24;      // markets closing within 24h
+
 export async function startBot() {
   console.log('\n========================================');
   console.log('  Signal BonBon — Kalshi-Only Bot');
@@ -427,6 +437,9 @@ async function poll() {
     console.warn(`[positions] Could not fetch live positions: ${e.message}`);
   }
 
+  // 4b. Sports momentum scanner
+  await scanSportsMomentum(liveTickerSet);
+
   for (const sig of signals) {
     if (positions.length >= config.maxOpenPositions) break;
     const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
@@ -480,6 +493,110 @@ async function poll() {
     `\n[summary] Positions: ${liveCount}  Ledger open: ${openTrades2.length}  Closed: ${closedTrades.length}  ` +
     `Realized PnL: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`
   );
+}
+
+/**
+ * Sports momentum scanner — fetch markets closing soon, detect 5c+ moves,
+ * buy 1 contract on momentum breakouts in the 55-70c range.
+ */
+async function scanSportsMomentum(liveTickerSet) {
+  try {
+    // Fetch markets closing within MOMENTUM_MAX_HOURS
+    const now = Date.now();
+    const cutoff = new Date(now + MOMENTUM_MAX_HOURS * 60 * 60 * 1000).toISOString();
+    const nowIso = new Date(now - 60 * 1000).toISOString(); // 1min ago to ensure "closing soon"
+    const url = `https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open&max_close_ts=${encodeURIComponent(cutoff)}&min_close_ts=${encodeURIComponent(nowIso)}`;
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.log(`[momentum] Kalshi API ${resp.status}`);
+      return;
+    }
+    const data = await resp.json();
+    const markets = data.markets || [];
+    if (!markets.length) {
+      console.log(`[momentum] No markets closing within ${MOMENTUM_MAX_HOURS}h`);
+      return;
+    }
+
+    console.log(`[momentum] Scanning ${markets.length} markets closing within ${MOMENTUM_MAX_HOURS}h`);
+
+    let signals = 0;
+    const nowMs = Date.now();
+
+    for (const m of markets) {
+      const ticker = m.ticker;
+      if (!ticker) continue;
+
+      // Current yes price from the market data (last trade or ask)
+      const yesPrice = (m.yes_ask != null ? m.yes_ask : m.last_price) / 100;
+      if (yesPrice == null || isNaN(yesPrice)) continue;
+
+      // Update price history
+      if (!priceHistory.has(ticker)) priceHistory.set(ticker, []);
+      const history = priceHistory.get(ticker);
+      history.push({ price: yesPrice, time: nowMs });
+
+      // Trim old entries (older than 2x window to keep some context)
+      while (history.length > 0 && history[0].time < nowMs - MOMENTUM_WINDOW_MS * 2) {
+        history.shift();
+      }
+
+      // Need at least 2 data points to detect movement
+      if (history.length < 2) continue;
+
+      // Find the price from ~MOMENTUM_WINDOW_MS ago
+      const windowStart = nowMs - MOMENTUM_WINDOW_MS;
+      const oldEntry = history.find(h => h.time >= windowStart) || history[0];
+      const priceMove = yesPrice - oldEntry.price;
+
+      // Check momentum conditions
+      if (priceMove < MOMENTUM_MIN_MOVE) continue;
+      if (yesPrice < MOMENTUM_MIN_PRICE || yesPrice > MOMENTUM_MAX_PRICE) continue;
+
+      // Skip if we already hold this ticker
+      if (liveTickerSet.has(ticker)) continue;
+
+      signals++;
+      const title = (m.title || m.subtitle || ticker).substring(0, 50);
+      console.log(
+        `[momentum] >> ${title} | ${ticker}\n` +
+        `[momentum]    ${(oldEntry.price*100).toFixed(0)}c -> ${(yesPrice*100).toFixed(0)}c (+${(priceMove*100).toFixed(0)}c in ${Math.round((nowMs - oldEntry.time)/1000)}s) | closes ${m.close_time || '?'}`
+      );
+
+      // Buy 1 contract
+      if (config.dryRun) {
+        console.log(`[momentum]    DRY RUN: would buy ${MOMENTUM_CONTRACTS} YES @ ${(yesPrice*100).toFixed(0)}c`);
+        continue;
+      }
+
+      const limitPrice = Math.min(Math.round((yesPrice + 0.02) * 100), 70); // cap at 70c
+      try {
+        const order = await getKalshiClient().callApi('CreateOrder', {
+          ticker,
+          action: 'buy',
+          side: 'yes',
+          type: 'limit',
+          count: MOMENTUM_CONTRACTS,
+          yes_price: limitPrice,
+        });
+        const filled = order?.order?.fill_count ?? 0;
+        console.log(`[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c`);
+        if (filled > 0) {
+          recordTrade(ticker, 'yes', yesPrice, limitPrice / 100, filled);
+        }
+      } catch (e) {
+        console.error(`[momentum]    Order failed: ${e.message}`);
+      }
+      await sleep(1500);
+    }
+
+    if (signals === 0) {
+      console.log(`[momentum] No momentum signals this cycle`);
+    }
+  } catch (e) {
+    console.warn(`[momentum] Scanner error: ${e.message}`);
+  }
 }
 
 function sleep(ms) {
