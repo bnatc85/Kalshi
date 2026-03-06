@@ -5,7 +5,7 @@
  */
 
 import { config, loadApprovedMarkets } from './config.js';
-import { initClients, fetchMarketPrices, fetchOrderBook, getKalshiClient } from './fetcher.js';
+import { initClients, fetchMarketPrices, getKalshiClient } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
 
