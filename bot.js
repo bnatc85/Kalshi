@@ -297,24 +297,45 @@ async function poll() {
         continue;
       }
 
-      const orderParams = {
-        outcome,
-        side: 'sell',
+      // Use Kalshi REST API directly via pmxtjs callApi — the high-level
+      // createOrder swallows error details and fails on sells
+      const kalshiOrderBody = {
+        ticker,
+        action: 'sell',
+        side: side,      // 'yes' or 'no'
         type: 'limit',
-        amount: sellQty,
-        price: sellPrice,
+        count: sellQty,
+        ...(side === 'yes'
+          ? { yes_price: Math.round(sellPrice * 100) }
+          : { no_price: Math.round(sellPrice * 100) }),
       };
-      console.log(`[auto-sell]   -> order params: ${JSON.stringify({ ticker, outcomeId: outcome?.outcomeId, outcomeLabel: outcome?.label, side: 'sell', amount: sellQty, price: sellPrice })}`);
+      console.log(`[auto-sell]   -> kalshi order: ${JSON.stringify(kalshiOrderBody)}`);
 
       try {
-        const order = await getKalshiClient().createOrder(orderParams);
+        const order = await getKalshiClient().callApi('CreateOrder', { body: kalshiOrderBody });
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
         const pnl = entry ? (sellPrice - entry) * sellQty : null;
         if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
         closeTrade(ticker, sellPrice, pnl);
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
-        console.error(`[auto-sell]   -> error details: ${JSON.stringify(e, Object.getOwnPropertyNames(e)).substring(0, 500)}`);
+        // Fallback: try pmxtjs createOrder in case callApi format is wrong
+        try {
+          console.log(`[auto-sell]   -> trying pmxtjs createOrder fallback...`);
+          const order = await getKalshiClient().createOrder({
+            outcome,
+            side: 'sell',
+            type: 'limit',
+            amount: sellQty,
+            price: sellPrice,
+          });
+          console.log(`[auto-sell]   -> SOLD (fallback): ${JSON.stringify(order)}`);
+          const pnl = entry ? (sellPrice - entry) * sellQty : null;
+          if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+          closeTrade(ticker, sellPrice, pnl);
+        } catch (e2) {
+          console.error(`[auto-sell]   -> fallback also failed: ${e2.message}`);
+        }
       }
       await sleep(1500);
     }
