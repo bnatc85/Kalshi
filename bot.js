@@ -81,8 +81,11 @@ export async function startBot() {
   initClients();
 
   while (true) {
+    const cycleStart = Date.now();
     await poll();
-    await sleep(config.pollIntervalSeconds * 1000);
+    const elapsed = Date.now() - cycleStart;
+    const remaining = Math.max(0, config.pollIntervalSeconds * 1000 - elapsed);
+    if (remaining > 0) await sleep(remaining);
   }
 }
 
