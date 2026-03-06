@@ -51,6 +51,12 @@ export async function enterPosition(signal, marketConfig, contracts) {
     if (!markets.length) throw new Error(`Market not found: ${marketConfig.kalshiTicker}`);
 
     const market = markets[0];
+
+    // CRITICAL: verify the returned market matches what we asked for
+    if (market.marketId !== marketConfig.kalshiTicker) {
+      throw new Error(`WRONG MARKET: asked for ${marketConfig.kalshiTicker}, got ${market.marketId}`);
+    }
+
     console.log(`  Market data: id=${market.marketId} outcomes=${JSON.stringify(market.outcomes?.map(o => ({label: o.label, id: o.outcomeId})))}`);
 
     const outcome = side === 'yes'
@@ -92,6 +98,11 @@ export async function exitPosition(position, marketConfig) {
     if (!markets.length) throw new Error(`Market not found: ${marketConfig.kalshiTicker}`);
 
     const market = markets[0];
+
+    if (market.marketId !== marketConfig.kalshiTicker) {
+      throw new Error(`WRONG MARKET: asked for ${marketConfig.kalshiTicker}, got ${market.marketId}`);
+    }
+
     const outcome = position.tradeSide === 'yes'
       ? market.outcomes.find(o => o.label === 'Yes') ?? market.outcomes[0]
       : market.outcomes.find(o => o.label === 'No')  ?? market.outcomes[1];

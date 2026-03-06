@@ -5,7 +5,7 @@
  */
 
 import { config, loadApprovedMarkets } from './config.js';
-import { initClients, fetchMarketPrices, getKalshiClient } from './fetcher.js';
+import { initClients, fetchMarketPrices, fetchKalshiMarket, getKalshiClient } from './fetcher.js';
 import { findDivergence, shouldExitPosition } from './arbitrage.js';
 import { enterPosition, exitPosition } from './executor.js';
 
@@ -113,28 +113,34 @@ async function poll() {
 
       const ticker = pos.marketId;
 
-      // pmxt returns outcomeLabel = ticker (not "Yes"/"No"), so we need to
-      // figure out which side we hold by fetching the market
+      // Fetch the correct market using the validated fetcher (pmxt's raw
+      // fetchMarkets returns WRONG markets for some tickers — it returned
+      // KXELONMARS-99 for KXFED tickers, causing sells on the wrong market)
       let market = null;
       try {
-        const markets = await getKalshiClient().fetchMarkets({ ticker, limit: 1 });
+        const markets = await fetchKalshiMarket(ticker);
         market = markets[0] ?? null;
       } catch (e) {
         console.warn(`[auto-sell] Failed to fetch market ${ticker}: ${e.message}`);
       }
       if (!market) { console.warn(`[auto-sell] ${ticker}: market not found, skipping`); continue; }
 
+      // CRITICAL: verify the returned market actually matches our ticker
+      if (market.marketId !== ticker) {
+        console.error(`[auto-sell] WRONG MARKET: asked for ${ticker}, got ${market.marketId} — SKIPPING`);
+        continue;
+      }
+
       // Determine which outcome we hold: try outcomeId match first,
       // then fall back to YES (Kalshi positions default to YES side)
       let outcome = market.outcomes?.find(o => o.outcomeId === pos.outcomeId);
       let side = outcome?.label?.toLowerCase() ?? 'yes';
       if (!outcome) {
-        // outcomeId didn't match — pmxt sets it to the ticker.
-        // Default to YES (the primary outcome on Kalshi)
         outcome = market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0];
         side = 'yes';
       }
       if (!outcome) { console.warn(`[auto-sell] ${ticker}: no outcomes found`); continue; }
+      console.log(`[auto-sell] ${ticker}: verified market=${market.marketId}, outcome=${outcome.outcomeId} (${outcome.label})`);
 
       // Fetch order book via Kalshi REST API directly (pmxt's fetchOrderBook
       // fails with DECODER error due to key format issues)
