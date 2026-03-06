@@ -312,7 +312,7 @@ async function poll() {
       console.log(`[auto-sell]   -> kalshi order: ${JSON.stringify(kalshiOrderBody)}`);
 
       try {
-        const order = await getKalshiClient().callApi('CreateOrder', { body: kalshiOrderBody });
+        const order = await getKalshiClient().callApi('CreateOrder', kalshiOrderBody);
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
         const pnl = entry ? (sellPrice - entry) * sellQty : null;
         if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
