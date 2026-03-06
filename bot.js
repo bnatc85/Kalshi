@@ -201,12 +201,10 @@ async function poll() {
         // No entry price from API — sell at any bid to exit
         minSellPrice = 0.01;
       } else {
-        // No entry price and not accidental — only sell if PnL is positive
-        if (pos.unrealizedPnL <= 0) {
-          console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price, PnL=$${pos.unrealizedPnL?.toFixed(2) ?? '?'}, holding`);
-          continue;
-        }
-        minSellPrice = 0.01; // PnL is positive, sell at any bid
+        // No entry price and not the accidental position — hold.
+        // Without knowing what we paid, we can't determine if selling is profitable.
+        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${pos.size} contracts | no entry price, PnL=$${pos.unrealizedPnL?.toFixed(2) ?? '?'}, holding (need entry price to sell)`);
+        continue;
       }
 
       console.log(
@@ -248,6 +246,7 @@ async function poll() {
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
+        console.error(`[auto-sell]   -> error details: ${JSON.stringify(e, Object.getOwnPropertyNames(e)).substring(0, 500)}`);
       }
       await sleep(1500);
     }
