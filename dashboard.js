@@ -29,7 +29,7 @@ async function runScan() {
     const snapshots = [];
     for (const market of config.markets) {
       snapshots.push(await fetchMarketPrices(market));
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 1000));
     }
     const results = [];
 
@@ -197,6 +197,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .badge-quiet { background: #21262d; color: #8b949e; }
   .badge-warn { background: #3d2200; color: #f0c000; }
   .badge-danger { background: #3d0000; color: #ff6b6b; }
+  .badge-buy { background: #0d3320; color: #3fb950; border: 1px solid #3fb950; }
+  .badge-wait { background: #3d2e00; color: #f0c000; border: 1px solid #f0c000; }
+  .badge-pass { background: #21262d; color: #484f58; border: 1px solid #30363d; }
 
   .price-row { display: flex; gap: 24px; margin-bottom: 10px; flex-wrap: wrap; }
   .price-item .pl { font-size: 11px; color: #8b949e; margin-bottom: 2px; }
@@ -377,10 +380,20 @@ function renderMarketCard(m, cfg) {
     else liqBadge = '<span class="badge badge-signal">DEEP</span>';
   }
 
+  // Action badge: BUY / WAIT / PASS
+  let actionBadge = '';
+  if (m.meetsThreshold) {
+    actionBadge = '<span class="badge badge-buy">BUY ' + m.tradeSide.toUpperCase() + '</span>';
+  } else if (m.recommendation) {
+    actionBadge = '<span class="badge badge-wait">WAIT</span>';
+  } else {
+    actionBadge = '<span class="badge badge-pass">PASS</span>';
+  }
+
   let html = '<div class="market-card ' + (m.meetsThreshold ? 'signal' : '') + '">' +
     '<div class="title">' + esc(m.label) + ' ' +
       (m.meetsThreshold ? '<span class="badge badge-signal">SIGNAL</span>' : '<span class="badge badge-quiet">WATCHING</span>') +
-      ' ' + liqBadge +
+      ' ' + liqBadge + ' ' + actionBadge +
     '</div>';
 
   // Prices - show both ask (tradeable) and last traded

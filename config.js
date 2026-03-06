@@ -13,7 +13,7 @@ export const config = {
   minIRR: parseInt(process.env.MIN_IRR || '20'),
   positionSizeUSD: parseInt(process.env.POSITION_SIZE_USD || '100'),
   maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '3'),
-  pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '30'),
+  pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '60'),
   exitConvergenceBps: parseInt(process.env.EXIT_CONVERGENCE_BPS || '50'),
 
   // Markets to watch

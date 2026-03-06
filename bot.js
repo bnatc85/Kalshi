@@ -36,10 +36,12 @@ async function poll() {
   const timestamp = new Date().toLocaleTimeString();
   console.log(`\n--- ${timestamp} ---`);
 
-  // 1. Fetch all market prices in parallel
-  const snapshots = await Promise.all(
-    config.markets.map(m => fetchMarketPrices(m))
-  );
+  // 1. Fetch market prices sequentially to avoid Kalshi 429 rate limits
+  const snapshots = [];
+  for (const m of config.markets) {
+    snapshots.push(await fetchMarketPrices(m));
+    await sleep(1500);
+  }
 
   // 2. Compute divergences
   const signals = [];
