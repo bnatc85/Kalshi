@@ -287,8 +287,10 @@ async function poll() {
       }
 
       // Place limit sell at the best bid price to fill immediately
+      // Cap at 25 contracts per order (same as buy side) — remainder sells next cycle
       const sellPrice = bestBid;
-      console.log(`[auto-sell]   -> SELLING: ${pos.size} @ ${(sellPrice*100).toFixed(1)}c`);
+      const sellQty = Math.min(pos.size, 25);
+      console.log(`[auto-sell]   -> SELLING: ${sellQty}${sellQty < pos.size ? '/' + pos.size : ''} @ ${(sellPrice*100).toFixed(1)}c`);
 
       if (config.dryRun) {
         console.log(`[auto-sell]   -> DRY RUN: would sell`);
@@ -300,11 +302,11 @@ async function poll() {
           outcome,
           side: 'sell',
           type: 'limit',
-          amount: pos.size,
+          amount: sellQty,
           price: sellPrice,
         });
         console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
-        const pnl = entry ? (sellPrice - entry) * pos.size : null;
+        const pnl = entry ? (sellPrice - entry) * sellQty : null;
         if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
         closeTrade(ticker, sellPrice, pnl);
       } catch (e) {
