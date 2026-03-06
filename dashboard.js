@@ -725,14 +725,16 @@ let _positions = [];
 
 async function loadPositions() {
   const grid = document.getElementById('positionsGrid');
+  if (!grid) return;
   grid.innerHTML = '<div class="empty"><span class="spinner"></span>Loading positions...</div>';
   try {
     const [posResp, balResp] = await Promise.all([
       fetch('/api/positions'),
       fetch('/api/balance'),
     ]);
+    if (!posResp.ok) throw new Error('Failed to fetch positions: ' + posResp.status);
     _positions = await posResp.json();
-    const balance = await balResp.json();
+    const balance = balResp.ok ? await balResp.json() : {};
 
     const balEl = document.getElementById('balanceDisplay');
     if (balance && (balance.balance != null || balance.available != null)) {
@@ -771,10 +773,7 @@ function renderPositions() {
         (avgPrice != null ? '<div class="metric"><span class="ml">Avg Price: </span><span class="mv">' + (avgPrice * 100).toFixed(1) + 'c</span></div>' : '') +
         '<div class="metric"><span class="ml">Cost: </span><span class="mv">$' + cost + '</span></div>' +
       '</div>' +
-      '<div style="margin-top:10px">' +
-        '<button class="btn" style="background:#3d0000;color:#ff6b6b;border-color:#ff6b6b;font-size:11px;padding:4px 12px" ' +
-          'onclick="closePosition(' + i + ')">Close Position (Market Sell)</button>' +
-      '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:#8b949e">Close this position on <a href="https://kalshi.com/portfolio" target="_blank" style="color:#58a6ff">kalshi.com/portfolio</a></div>' +
     '</div>';
   }
   grid.innerHTML = html;
@@ -809,7 +808,7 @@ async function closePosition(idx) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); loadCandidates(); loadPositions(); }).catch(() => {});
+fetch('/api/status').then(r => r.json()).then(data => { if (data.markets) render(data); loadHistory(); loadCandidates(); }).catch(() => {});
 </script>
 </body>
 </html>`;
