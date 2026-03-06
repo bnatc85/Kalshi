@@ -26,11 +26,15 @@ export async function enterPosition(signal, marketConfig, contracts) {
     if (!markets.length) throw new Error(`Market not found: ${marketConfig.kalshiTicker}`);
 
     const market = markets[0];
-    const outcome = side === 'yes'
-      ? market.outcomes.find(o => o.label === 'Yes') ?? market.outcomes[0]
-      : market.outcomes.find(o => o.label === 'No')  ?? market.outcomes[1];
+    console.log(`  Market data: id=${market.marketId} outcomes=${JSON.stringify(market.outcomes?.map(o => ({label: o.label, id: o.outcomeId})))}`);
 
-    if (!outcome) throw new Error(`Outcome "${side}" not found`);
+    const outcome = side === 'yes'
+      ? market.outcomes?.find(o => o.label === 'Yes') ?? market.outcomes?.[0]
+      : market.outcomes?.find(o => o.label === 'No')  ?? market.outcomes?.[1];
+
+    if (!outcome) throw new Error(`Outcome "${side}" not found in ${JSON.stringify(market.outcomes)}`);
+
+    console.log(`  Placing order: outcomeId=${outcome.outcomeId} side=buy type=market amount=${contracts}`);
 
     const order = await getKalshiClient().createOrder({
       outcomeId: outcome.outcomeId,
@@ -43,6 +47,7 @@ export async function enterPosition(signal, marketConfig, contracts) {
     return { success: true, dryRun: false, order };
   } catch (e) {
     console.error(`  Order FAILED: ${e.message}`);
+    console.error(`  Full error: ${JSON.stringify(e, Object.getOwnPropertyNames(e))}`);
     return { success: false, error: e.message };
   }
 }
