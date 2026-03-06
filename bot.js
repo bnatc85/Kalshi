@@ -257,12 +257,14 @@ async function poll() {
       if (entry == null && !isAccidentalPosition) {
         try {
           const fills = await getKalshiClient().callApi('GetFills', { ticker, limit: 100 });
-          const buyFills = (fills?.fills || []).filter(f => f.action === 'buy');
+          const allFills = fills?.fills || [];
+          console.log(`[auto-sell] ${ticker}: GetFills returned ${allFills.length} fills${allFills.length ? ': ' + JSON.stringify(allFills.slice(0, 2)) : ''}`);
+          const buyFills = allFills.filter(f => f.action === 'buy');
           if (buyFills.length) {
             const totalCost = buyFills.reduce((s, f) => s + (f.yes_price || f.no_price || 0) * (f.count || 1), 0);
             const totalQty = buyFills.reduce((s, f) => s + (f.count || 1), 0);
             entry = totalCost / totalQty / 100; // convert cents to decimal
-            console.log(`[auto-sell] ${ticker}: found entry from ${buyFills.length} fills: avg ${(entry*100).toFixed(1)}c`);
+            console.log(`[auto-sell] ${ticker}: found entry from ${buyFills.length} buy fills: avg ${(entry*100).toFixed(1)}c`);
           }
         } catch (e) {
           console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
