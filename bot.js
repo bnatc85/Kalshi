@@ -149,11 +149,13 @@ async function poll() {
     }
   }
 
-  // Fetch open sell orders once — used by both auto-sell (3b) and buy (4)
+  // Fetch open orders once — used by both auto-sell (3b) and buy (4)
   let openSellTickers = new Set();
+  let openOrderTickers = new Set();  // ALL open orders (buy + sell) — block re-buying
   try {
     const openOrders = await getKalshiClient().fetchOpenOrders();
     for (const o of openOrders) {
+      openOrderTickers.add(o.marketId);
       if (o.side === 'sell') openSellTickers.add(o.marketId);
     }
   } catch (e) {
@@ -323,8 +325,8 @@ async function poll() {
     for (const p of livePositions) {
       if (p.size > 0) liveTickerSet.add(p.marketId);
     }
-    // Also block buys for tickers with pending sell orders
-    for (const t of openSellTickers) liveTickerSet.add(t);
+    // Also block buys for tickers with ANY pending orders (buy or sell)
+    for (const t of openOrderTickers) liveTickerSet.add(t);
     if (liveTickerSet.size > 0) {
       console.log(`[positions] Already holding/selling: ${[...liveTickerSet].join(', ')}`);
     }
