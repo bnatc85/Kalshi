@@ -189,10 +189,30 @@ async function poll() {
   }
 
   // 4. Enter new positions
+  // Fetch real Kalshi positions to avoid re-buying markets we already hold
+  let liveTickerSet = new Set();
+  try {
+    const livePositions = await getKalshiClient().fetchPositions();
+    for (const p of livePositions) {
+      if (p.size > 0) liveTickerSet.add(p.marketId);
+    }
+    if (liveTickerSet.size > 0) {
+      console.log(`[positions] Already holding: ${[...liveTickerSet].join(', ')}`);
+    }
+  } catch (e) {
+    console.warn(`[positions] Could not fetch live positions: ${e.message}`);
+  }
+
   for (const sig of signals) {
     if (positions.length >= config.maxOpenPositions) break;
     const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
     if (alreadyOpen) continue;
+
+    // Check if we already hold this ticker on Kalshi (survives bot restarts)
+    if (liveTickerSet.has(sig.market.kalshiTicker)) {
+      console.log(`[skip] ${sig.marketLabel}: already holding position on Kalshi`);
+      continue;
+    }
 
     // Use the limit price (entry + 1c buffer) for cost calculation
     const limitPrice = Math.round((sig.entryPrice + 0.01) * 100) / 100;
