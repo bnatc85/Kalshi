@@ -351,9 +351,18 @@ async function poll() {
 
       try {
         const order = await getKalshiClient().callApi('CreateOrder', kalshiOrderBody);
-        console.log(`[auto-sell]   -> SOLD: ${JSON.stringify(order)}`);
-        const pnl = entry ? (sellPrice - entry) * sellQty : null;
-        if (pnl != null) console.log(`[auto-sell]   -> PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        const fillCount = order?.order?.fill_count ?? sellQty;
+        const fees = parseFloat(order?.order?.taker_fees_dollars || '0');
+        const pnl = entry ? (sellPrice - entry) * fillCount - fees : null;
+        console.log(
+          `[auto-sell]   -> SOLD ${fillCount} contracts` +
+          (pnl != null ? ` | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (after $${fees.toFixed(2)} fees)` : '')
+        );
+        // Record in trade ledger — create entry if none exists (manual buys)
+        const existingTrade = getOpenTrade(ticker);
+        if (!existingTrade && entry) {
+          recordTrade(ticker, side, entry, entry, fillCount);
+        }
         closeTrade(ticker, sellPrice, pnl);
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
@@ -418,9 +427,23 @@ async function poll() {
     }
   }
 
-  // 5. Summary
-  const totalPnl = closedPnl.reduce((s, p) => s + (p.realizedPnl ?? 0), 0);
-  console.log(`\n[summary] Open: ${positions.length}  Closed: ${closedPnl.length}  Realized PnL: $${totalPnl.toFixed(2)}`);
+  // 5. Summary — from real Kalshi positions + trade ledger
+  const allTrades = loadTrades();
+  const openTrades2 = allTrades.filter(t => t.status === 'open');
+  const closedTrades = allTrades.filter(t => t.status === 'closed');
+  const realizedPnl = closedTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+
+  // Count real Kalshi positions
+  let liveCount = 0;
+  try {
+    const live = await getKalshiClient().fetchPositions();
+    liveCount = live.filter(p => p.size > 0).length;
+  } catch {}
+
+  console.log(
+    `\n[summary] Positions: ${liveCount}  Ledger open: ${openTrades2.length}  Closed: ${closedTrades.length}  ` +
+    `Realized PnL: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`
+  );
 }
 
 function sleep(ms) {
