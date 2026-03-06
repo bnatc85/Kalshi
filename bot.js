@@ -162,6 +162,9 @@ async function poll() {
     console.warn(`[orders] Could not fetch open orders: ${e.message}`);
   }
 
+  // Track tickers sold this cycle — prevent re-buying in step 4
+  const soldThisCycle = new Set();
+
   // 3b. Auto-sell: check real Kalshi positions, sell if bid > entry price
   try {
     // Fetch positions via raw Kalshi API to get all fields (pmxt strips some)
@@ -211,24 +214,17 @@ async function poll() {
         continue;
       }
 
-      // Determine which outcome we hold.
-      // pmxt sets outcomeId to the ticker for both position and market outcomes,
-      // and labels are things like "4.50%", "Mars", "Reward" — NOT "Yes"/"No".
-      // On Kalshi, the first outcome = YES side, second = NO side.
-      // Default to YES (index 0) since that's what most positions are.
+      // Determine which outcome we hold (yes vs no).
+      // pmxt sets outcomeId to the ticker for ALL outcomes, so matching by
+      // outcomeId always returns index 0 (yes). Use the raw Kalshi position
+      // data instead: position > 0 = yes, position < 0 = no.
       const outcomes = market.outcomes || [];
-      let outcome = outcomes[0]; // default to first outcome (YES side)
       let side = 'yes';
-
-      // If there are multiple outcomes and we can match by outcomeId, figure out
-      // which index we're at to determine yes vs no
-      if (outcomes.length > 1) {
-        const matchIdx = outcomes.findIndex(o => o.outcomeId === pos.outcomeId);
-        if (matchIdx === 1) {
-          outcome = outcomes[1];
-          side = 'no';
-        }
+      const raw = rawMap.get(ticker);
+      if (raw && raw.position < 0) {
+        side = 'no';
       }
+      let outcome = side === 'no' ? (outcomes[1] || outcomes[0]) : outcomes[0];
 
       if (!outcome) { console.warn(`[auto-sell] ${ticker}: no outcomes found`); continue; }
       console.log(`[auto-sell] ${ticker}: market=${market.marketId}, side=${side.toUpperCase()}, outcome=${outcome.outcomeId} (${outcome.label})`);
@@ -288,11 +284,11 @@ async function poll() {
       }
 
       // 3b. Raw Kalshi position data — calculate avg entry from market_exposure / position
+      // position is positive for Yes, negative for No; use abs value for the calc
       if (entry == null) {
-        const raw = rawMap.get(ticker);
-        if (raw && raw.market_exposure > 0 && raw.position > 0) {
-          entry = (raw.market_exposure / raw.position) / 100; // cents to decimal
-          console.log(`[auto-sell] ${ticker}: entry from Kalshi position: ${(entry*100).toFixed(1)}c (exposure=${raw.market_exposure}c / ${raw.position} contracts)`);
+        if (raw && raw.market_exposure > 0 && raw.position !== 0) {
+          entry = (raw.market_exposure / Math.abs(raw.position)) / 100; // cents to decimal
+          console.log(`[auto-sell] ${ticker}: entry from Kalshi position: ${(entry*100).toFixed(1)}c (exposure=${raw.market_exposure}c / ${Math.abs(raw.position)} contracts)`);
         }
       }
 
@@ -303,10 +299,16 @@ async function poll() {
           const allFills = fills?.fills || [];
           const buyFills = allFills.filter(f => f.action === 'buy');
           if (buyFills.length) {
-            const totalCost = buyFills.reduce((s, f) => s + (f.yes_price || f.no_price || 0) * (f.count || 1), 0);
+            // Use the correct price field for our side — yes_price and no_price
+            // are BOTH set on every fill (summing to 100), so yes_price || no_price
+            // always returns yes_price, which is WRONG for No positions.
+            const totalCost = buyFills.reduce((s, f) => {
+              const price = side === 'no' ? (f.no_price || f.yes_price || 0) : (f.yes_price || f.no_price || 0);
+              return s + price * (f.count || 1);
+            }, 0);
             const totalQty = buyFills.reduce((s, f) => s + (f.count || 1), 0);
             entry = totalCost / totalQty / 100;
-            console.log(`[auto-sell] ${ticker}: entry from ${buyFills.length} fills: avg ${(entry*100).toFixed(1)}c`);
+            console.log(`[auto-sell] ${ticker}: entry from ${buyFills.length} fills (${side}): avg ${(entry*100).toFixed(1)}c`);
           }
         } catch (e) {
           console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
@@ -387,6 +389,7 @@ async function poll() {
           `[auto-sell]   -> SOLD ${fillCount} contracts` +
           (pnl != null ? ` | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (after $${fees.toFixed(2)} fees)` : '')
         );
+        soldThisCycle.add(ticker);
         // Record in trade ledger — create entry if none exists (manual buys)
         const existingTrade = getOpenTrade(ticker);
         if (!existingTrade && entry) {
@@ -413,6 +416,8 @@ async function poll() {
     }
     // Also block buys for tickers with ANY pending orders (buy or sell)
     for (const t of openOrderTickers) liveTickerSet.add(t);
+    // Block re-buying tickers we just sold this cycle
+    for (const t of soldThisCycle) liveTickerSet.add(t);
     if (liveTickerSet.size > 0) {
       console.log(`[positions] Already holding/selling: ${[...liveTickerSet].join(', ')}`);
     }

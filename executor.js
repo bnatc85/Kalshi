@@ -95,13 +95,16 @@ export async function exitPosition(position, marketConfig) {
   try {
     const side = position.tradeSide;
     const sellQty = Math.min(position.contracts, MAX_CONTRACTS);
+    // Sell at entry + 3c to cover round-trip fees (~1.4c) and guarantee profit.
+    // If no bid at this level, the order stays open for auto-sell to handle.
+    const minPrice = Math.max(1, Math.round(((position.entryPrice || 0.01) + 0.03) * 100));
     const kalshiOrder = {
       ticker: marketConfig.kalshiTicker,
       action: 'sell',
       side,
       type: 'limit',
       count: sellQty,
-      ...(side === 'yes' ? { yes_price: 1 } : { no_price: 1 }),  // 1c to ensure fill
+      ...(side === 'yes' ? { yes_price: minPrice } : { no_price: minPrice }),
     };
     console.log(`  Exit order: ${JSON.stringify(kalshiOrder)}`);
 
