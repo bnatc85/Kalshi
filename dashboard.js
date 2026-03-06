@@ -630,32 +630,28 @@ function renderCandidateCard(c, idx) {
   '</div>';
 }
 
-async function approveMarket(idx) {
+function approveMarket(idx) {
   const c = _candidates[idx];
   if (!c) return;
-  try {
-    const resp = await fetch('/api/candidates/approve', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ id: c.id })
-    });
-    const data = await resp.json();
-    if (data.success) { c.status = 'approved'; renderCandidates(); }
-  } catch (e) {}
+  c.status = 'approved';
+  renderCandidates();
+  fetch('/api/candidates/approve', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: c.id })
+  }).catch(() => {});
 }
 
-async function dismissMarket(idx) {
+function dismissMarket(idx) {
   const c = _candidates[idx];
   if (!c) return;
-  try {
-    const resp = await fetch('/api/candidates/dismiss', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ id: c.id })
-    });
-    const data = await resp.json();
-    if (data.success) { c.status = 'dismissed'; renderCandidates(); }
-  } catch (e) {}
+  _candidates.splice(idx, 1);
+  renderCandidates();
+  fetch('/api/candidates/dismiss', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: c.id })
+  }).catch(() => {});
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
