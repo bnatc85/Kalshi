@@ -223,10 +223,7 @@ async function poll() {
       const posSize = Math.abs(pos.size);
 
       // Skip if there's already a pending sell order for this market
-      if (openSellTickers.has(pos.marketId)) {
-        console.log(`[auto-sell] ${pos.marketId}: already has pending sell order, skipping`);
-        continue;
-      }
+      if (openSellTickers.has(pos.marketId)) continue;
 
       const ticker = pos.marketId;
 
@@ -261,7 +258,6 @@ async function poll() {
       let outcome = side === 'no' ? (outcomes[1] || outcomes[0]) : outcomes[0];
 
       if (!outcome) { console.warn(`[auto-sell] ${ticker}: no outcomes found`); continue; }
-      console.log(`[auto-sell] ${ticker}: market=${market.marketId}, side=${side.toUpperCase()}, outcome=${outcome.outcomeId} (${outcome.label})`);
 
       // Fetch order book via Kalshi REST API directly (pmxt's fetchOrderBook
       // fails with DECODER error due to key format issues)
@@ -285,7 +281,6 @@ async function poll() {
             bestBid = noBids[noBids.length - 1][0] / 100;
           }
 
-          console.log(`[auto-sell] ${ticker} book: yesBids=${yesBids.length} noBids=${noBids.length} bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}`);
         } else {
           console.warn(`[auto-sell] ${ticker} orderbook HTTP ${obResp.status}`);
         }
@@ -322,7 +317,6 @@ async function poll() {
       if (entry == null) {
         if (raw && raw.market_exposure > 0 && raw.position !== 0) {
           entry = (raw.market_exposure / Math.abs(raw.position)) / 100; // cents to decimal
-          console.log(`[auto-sell] ${ticker}: entry from Kalshi position: ${(entry*100).toFixed(1)}c (exposure=${raw.market_exposure}c / ${Math.abs(raw.position)} contracts)`);
         }
       }
 
@@ -342,7 +336,6 @@ async function poll() {
             }, 0);
             const totalQty = buyFills.reduce((s, f) => s + (f.count || 1), 0);
             entry = totalCost / totalQty / 100;
-            console.log(`[auto-sell] ${ticker}: entry from ${buyFills.length} fills (${side}): avg ${(entry*100).toFixed(1)}c`);
           }
         } catch (e) {
           console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
@@ -361,39 +354,25 @@ async function poll() {
         minSellPrice = 0.01;
       } else {
         // Still no entry price — hold, don't sell blind
-        console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} | ${posSize} contracts | no entry price found, holding`);
         continue;
       }
 
-      const entrySource = entry != null ? 'found' : '?';
-      console.log(
-        `[auto-sell] ${ticker} ${side.toUpperCase()} | ${posSize} contracts | ` +
-        `entry=${entry != null ? (entry*100).toFixed(1)+'c' : '?'} (${entrySource})  ` +
-        `bestBid=${bestBid != null ? (bestBid*100).toFixed(1)+'c' : 'none'}  ` +
-        `minSell=${(minSellPrice*100).toFixed(1)}c` +
-        (isAccidentalPosition ? '  [ACCIDENTAL - exit ASAP]' : '')
-      );
+      if (bestBid == null) continue;
 
-      if (bestBid == null) {
-        console.log(`[auto-sell]   -> no bid available, holding`);
-        continue;
-      }
-
-      // If bid is >= 95c, sell immediately — event is nearly resolved,
-      // take profit now rather than waiting for settlement
+      // Decide whether to sell
+      let sellReason = null;
       if (bestBid >= 0.95) {
-        console.log(`[auto-sell]   -> bid ${(bestBid*100).toFixed(0)}c >= 95c — selling (near-certain outcome)`);
-      } else if (bestBid < minSellPrice) {
-        const gap = ((minSellPrice - bestBid) * 100).toFixed(1);
-        console.log(`[auto-sell]   -> bid ${gap}c below min sell price, holding`);
-        continue;
+        sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
+      } else if (bestBid >= minSellPrice) {
+        sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
       }
+      if (!sellReason) continue;
 
       // Place limit sell at the best bid price to fill immediately
       // Cap at 25 contracts per order (same as buy side) — remainder sells next cycle
       const sellPrice = bestBid;
       const sellQty = Math.min(posSize, 25);
-      console.log(`[auto-sell]   -> SELLING: ${sellQty}${sellQty < posSize ? '/' + posSize : ''} @ ${(sellPrice*100).toFixed(1)}c`);
+      console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} ${sellQty}x @ ${(sellPrice*100).toFixed(0)}c | ${sellReason}`);
 
       if (config.dryRun) {
         console.log(`[auto-sell]   -> DRY RUN: would sell`);
@@ -412,7 +391,6 @@ async function poll() {
           ? { yes_price: Math.round(sellPrice * 100) }
           : { no_price: Math.round(sellPrice * 100) }),
       };
-      console.log(`[auto-sell]   -> kalshi order: ${JSON.stringify(kalshiOrderBody)}`);
 
       try {
         const order = await getKalshiClient().callApi('CreateOrder', kalshiOrderBody);
@@ -453,7 +431,7 @@ async function poll() {
     // Block re-buying tickers we just sold this cycle
     for (const t of soldThisCycle) liveTickerSet.add(t);
     if (liveTickerSet.size > 0) {
-      console.log(`[positions] Already holding/selling: ${[...liveTickerSet].join(', ')}`);
+      console.log(`[positions] Holding ${liveTickerSet.size} tickers`);
     }
   } catch (e) {
     console.warn(`[positions] Could not fetch live positions: ${e.message}`);
