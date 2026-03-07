@@ -117,6 +117,18 @@ const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
 // Entertainment markets (Netflix etc.)
 const ENTERTAINMENT_SERIES = ['KXNETFLIXRANKSHOWGLOBAL', 'KXNETFLIXRANKMOVIEGLOBAL', 'KXNETFLIXRANKSHOW', 'KXNETFLIXRANKMOVIE', 'KXSURVIVORELIMINATION'];
 
+// Cross-market arbitrage — detect pricing inconsistencies across correlated markets
+const ARB_SERIES = ['KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXMLBSTGAME', 'KXNBAGAME'];
+const ARB_MIN_DIVERGENCE = 0.15; // 15c+ divergence between correlated markets
+const ARB_MAX_CONTRACTS = 3;     // conservative sizing for arb trades
+
+// Live scores — ESPN API for score validation
+const SCORE_API_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
+const SCORE_SPORTS = [
+  { key: 'baseball/mlb', prefix: 'KXM' },
+  { key: 'basketball/nba', prefix: 'KXNBA' },
+];
+
 // Filters
 // Volume-based position sizing: [minVolume, contracts]
 const MOMENTUM_SIZE_TIERS = [
@@ -499,6 +511,9 @@ async function poll() {
   // 4c. Settlement sniping scanner
   await scanSettlementSnipes(liveTickerSet);
 
+  // 4d. Cross-market arbitrage scanner
+  await scanCrossMarketArb(liveTickerSet);
+
   for (const sig of signals) {
     if (positions.length >= config.maxOpenPositions) break;
     const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
@@ -661,7 +676,13 @@ async function scanSportsMomentum(liveTickerSet) {
       }
 
       if (!exitReason) continue;
-      console.log(`[momentum] EXIT ${ticker} ${posSide.toUpperCase()}: ${exitReason}`);
+      // Add score context to exit log
+      let exitScore = '';
+      if (!mp.isTourney) {
+        const sc = await getScoreContext(ticker);
+        if (sc) exitScore = ` | ${sc.display}`;
+      }
+      console.log(`[momentum] EXIT ${ticker} ${posSide.toUpperCase()}: ${exitReason}${exitScore}`);
 
       if (config.dryRun) {
         console.log(`[momentum]    DRY RUN: would sell`);
@@ -864,9 +885,17 @@ async function scanSportsMomentum(liveTickerSet) {
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
       const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
       const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : hoursToClose < 48 ? `${hoursToClose.toFixed(1)}h` : `${Math.round(hoursToClose/24)}d`;
+
+      // Fetch live score context (non-blocking — cache avoids repeated calls)
+      let scoreStr = '';
+      if (!isTourney) {
+        const scoreCtx = await getScoreContext(ticker);
+        if (scoreCtx) scoreStr = ` | SCORE: ${scoreCtx.display}`;
+      }
+
       console.log(
         `[momentum] >> ${signalType}: ${title} | ${ticker} | ${tradeSide.toUpperCase()}\n` +
-        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${volume} | closes ${closesIn} | size=${contractCount}`
+        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${volume} | closes ${closesIn} | size=${contractCount}${scoreStr}`
       );
 
       if (config.dryRun) {
@@ -1017,6 +1046,214 @@ async function scanSettlementSnipes(liveTickerSet) {
   } catch (e) {
     console.warn(`[snipe] Scanner error: ${e.message}`);
   }
+}
+
+/**
+ * Cross-market arbitrage — find pricing inconsistencies across correlated markets.
+ * Groups markets by game session (same date/time/teams) and compares implied probabilities.
+ * E.g., if moneyline implies 70% but spread implies 50%, buy the cheap side.
+ */
+async function scanCrossMarketArb(liveTickerSet) {
+  try {
+    const now = Date.now();
+    const minClose = Math.floor((now - 60 * 1000) / 1000);
+    const maxClose = Math.floor((now + 6 * 60 * 60 * 1000) / 1000);
+
+    // Fetch all arb-eligible markets
+    const allMarkets = [];
+    for (const series of ARB_SERIES) {
+      try {
+        const resp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open&min_close_ts=${minClose}&max_close_ts=${maxClose}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          for (const m of (data.markets || [])) {
+            if (m.ticker) allMarkets.push({ ...m, seriesTicker: series });
+          }
+        }
+      } catch {}
+      await sleep(500);
+    }
+
+    if (allMarkets.length < 2) return;
+
+    // Extract game session from ticker
+    const getGameSession = (t) => {
+      const m = t.match(/(\d{2}[A-Z]{3}\d{4,6}[A-Z]{2,})/);
+      return m ? m[1] : null;
+    };
+
+    // Group by game session
+    const gameGroups = new Map();
+    for (const m of allMarkets) {
+      const gs = getGameSession(m.ticker);
+      if (!gs) continue;
+      if (!gameGroups.has(gs)) gameGroups.set(gs, []);
+      gameGroups.get(gs).push(m);
+    }
+
+    let arbSignals = 0;
+    for (const [gs, markets] of gameGroups) {
+      if (markets.length < 2) continue;
+
+      // Get Yes prices for each market type in this game
+      const prices = markets.map(m => ({
+        ticker: m.ticker,
+        series: m.seriesTicker,
+        title: (m.title || m.subtitle || m.ticker).substring(0, 40),
+        yesPrice: (m.yes_ask > 1 ? m.yes_ask : (m.last_price || 0)) / 100,
+        volume: m.volume || 0,
+      })).filter(p => p.yesPrice > 0.05 && p.yesPrice < 0.95);
+
+      if (prices.length < 2) continue;
+
+      // Find the largest price divergence between any two markets in the same game
+      for (let i = 0; i < prices.length; i++) {
+        for (let j = i + 1; j < prices.length; j++) {
+          const a = prices[i], b = prices[j];
+          // Skip if same series (e.g. two KXWBCGAME markets)
+          if (a.series === b.series) continue;
+
+          const divergence = Math.abs(a.yesPrice - b.yesPrice);
+          if (divergence < ARB_MIN_DIVERGENCE) continue;
+
+          // Buy the cheaper one (lower Yes price = more upside)
+          const cheap = a.yesPrice < b.yesPrice ? a : b;
+          const expensive = a.yesPrice < b.yesPrice ? b : a;
+
+          if (liveTickerSet.has(cheap.ticker)) continue;
+          if (cheap.volume < 20) continue;
+
+          console.log(
+            `[arb] >> ${gs}: ${cheap.title} (${(cheap.yesPrice*100).toFixed(0)}c) vs ${expensive.title} (${(expensive.yesPrice*100).toFixed(0)}c) = ${(divergence*100).toFixed(0)}c divergence`
+          );
+
+          if (config.dryRun) {
+            console.log(`[arb]    DRY RUN: would buy ${ARB_MAX_CONTRACTS} YES ${cheap.ticker} @ ${(cheap.yesPrice*100).toFixed(0)}c`);
+            continue;
+          }
+
+          // Buy the cheap side
+          const limitPrice = Math.round(cheap.yesPrice * 100);
+          try {
+            const order = await getKalshiClient().callApi('CreateOrder', {
+              ticker: cheap.ticker, action: 'buy', side: 'yes', type: 'limit',
+              count: ARB_MAX_CONTRACTS, yes_price: limitPrice,
+            });
+            const filled = order?.order?.fill_count ?? 0;
+            console.log(`${C.buy}[arb]    BOUGHT ${filled}/${ARB_MAX_CONTRACTS} YES @ ${limitPrice}c${C.reset}`);
+            liveTickerSet.add(cheap.ticker);
+            if (filled > 0) {
+              recordTrade(cheap.ticker, 'yes', limitPrice / 100, limitPrice / 100, filled);
+            }
+            arbSignals++;
+          } catch (e) {
+            console.error(`[arb]    Order failed: ${e.message}`);
+          }
+          await sleep(1500);
+        }
+      }
+    }
+    if (arbSignals > 0) console.log(`[arb] Placed ${arbSignals} arb trades`);
+  } catch (e) {
+    console.warn(`[arb] Scanner error: ${e.message}`);
+  }
+}
+
+/**
+ * Fetch live scores from ESPN API.
+ * Returns a Map of team abbreviation -> { score, status, period, timeLeft }
+ */
+const liveScoreCache = new Map(); // teamAbbr -> { score, status, period, fetchTime }
+
+async function fetchLiveScores() {
+  const now = Date.now();
+  // Only refresh every 60s
+  if (liveScoreCache.size > 0 && liveScoreCache.get('_lastFetch') > now - 60000) return liveScoreCache;
+
+  for (const sport of SCORE_SPORTS) {
+    try {
+      const resp = await fetch(`${SCORE_API_BASE}/${sport.key}/scoreboard`);
+      if (!resp.ok) continue;
+      const data = await resp.json();
+
+      for (const event of (data.events || [])) {
+        const competition = event.competitions?.[0];
+        if (!competition) continue;
+        const status = competition.status?.type?.name || 'unknown'; // STATUS_IN_PROGRESS, STATUS_FINAL, etc.
+        const period = competition.status?.period || 0;
+        const clock = competition.status?.displayClock || '';
+
+        for (const team of (competition.competitors || [])) {
+          const abbr = team.team?.abbreviation;
+          if (!abbr) continue;
+          liveScoreCache.set(abbr, {
+            score: parseInt(team.score || '0'),
+            status,
+            period,
+            clock,
+            sport: sport.key,
+            fetchTime: now,
+          });
+        }
+      }
+    } catch {}
+    await sleep(300);
+  }
+  liveScoreCache.set('_lastFetch', now);
+  return liveScoreCache;
+}
+
+/**
+ * Extract team abbreviations from a Kalshi ticker.
+ * E.g., KXWBCGAME-26MAR061900NICDOM -> ['NIC', 'DOM'] (last 3+3 chars of team portion)
+ * or KXMLBSTGAME-26APR071800NYYBAL -> ['NYY', 'BAL']
+ */
+function extractTeams(ticker) {
+  const m = ticker.match(/\d{4,6}([A-Z]+)$/);
+  if (!m) return [];
+  const teams = m[1];
+  // Teams are concatenated: 3-char abbreviations
+  if (teams.length >= 6) {
+    return [teams.substring(0, 3), teams.substring(3, 6)];
+  }
+  if (teams.length >= 4) {
+    // Some tickers have 2+2 or 2+3 char teams
+    const mid = Math.floor(teams.length / 2);
+    return [teams.substring(0, mid), teams.substring(mid)];
+  }
+  return [];
+}
+
+/**
+ * Check live scores to validate or boost momentum signals.
+ * Returns an object with score context for logging.
+ */
+async function getScoreContext(ticker) {
+  const teams = extractTeams(ticker);
+  if (teams.length < 2) return null;
+
+  const scores = await fetchLiveScores();
+  const team1 = scores.get(teams[0]);
+  const team2 = scores.get(teams[1]);
+
+  if (!team1 && !team2) return null;
+
+  const score1 = team1?.score ?? '?';
+  const score2 = team2?.score ?? '?';
+  const status = team1?.status || team2?.status || 'unknown';
+  const period = team1?.period || team2?.period || '?';
+  const clock = team1?.clock || team2?.clock || '';
+
+  return {
+    teams,
+    scores: [score1, score2],
+    status,
+    period,
+    clock,
+    display: `${teams[0]} ${score1} - ${teams[1]} ${score2} (${status === 'STATUS_IN_PROGRESS' ? `P${period} ${clock}` : status})`,
+    isLive: status === 'STATUS_IN_PROGRESS',
+    isFinal: status === 'STATUS_FINAL',
+  };
 }
 
 function sleep(ms) {
