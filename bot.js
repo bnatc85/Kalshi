@@ -74,12 +74,12 @@ const momentumPositions = new Map();
 // Entry signals — in-game sports
 const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
-const MOMENTUM_MIN_PRICE = 0.55;       // momentum: don't buy below 55c
-const MOMENTUM_MAX_PRICE = 0.60;       // momentum: don't buy above 60c (better risk/reward)
+const MOMENTUM_MIN_PRICE = 0.40;       // momentum: don't buy below 40c
+const MOMENTUM_MAX_PRICE = 0.70;       // momentum: don't buy above 70c
 const REVERSION_DIP = 0.05;            // mean reversion: 5c dip from avg
 const REVERSION_AVG_WINDOW_MS = 30 * 60 * 1000; // mean reversion: 30min avg
-const REVERSION_MIN_PRICE = 0.55;      // mean reversion: only favorites 55c+
-const REVERSION_MAX_PRICE = 0.80;      // mean reversion: cap at 80c
+const REVERSION_MIN_PRICE = 0.40;      // mean reversion: dip buyers from 40c+
+const REVERSION_MAX_PRICE = 0.85;      // mean reversion: cap at 85c
 
 // Exit thresholds — in-game sports
 const MOMENTUM_STOP_LOSS = 0.10;       // sell if price drops 10c below entry
@@ -723,7 +723,18 @@ async function scanSportsMomentum(liveTickerSet) {
     }
 
     // --- Step 2: Scan for new signals ---
-    console.log(`[momentum] Scanning ${markets.length} markets (${tourneyTickers.size} tourney, ${momentumPositions.size} active, ${exits} exited)`);
+    // Count markets with prices in tradeable range for debug
+    let inRange = 0;
+    const seenSeries = new Set();
+    for (const m of markets) {
+      if (!m.ticker) continue;
+      const p = currentPrices.get(m.ticker);
+      if (p && p >= 0.20 && p <= 0.85) inRange++;
+      // Track unique series prefixes
+      const prefix = m.ticker.match(/^[A-Z]+/)?.[0];
+      if (prefix) seenSeries.add(prefix);
+    }
+    console.log(`[momentum] Scanning ${markets.length} markets (${inRange} in price range, ${momentumPositions.size} active, ${exits} exited) | series: ${[...seenSeries].join(', ')}`);
 
     let signals = 0;
     const nowMs = Date.now();
@@ -851,7 +862,9 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!isTourney) {
         const scoreCtx = await getScoreContext(ticker);
         if (scoreCtx && !scoreCtx.isLive) {
-          // We found the game but it's not live — skip
+          if (signalType) {
+            console.log(`[momentum]    SKIP ${ticker}: game not live (${scoreCtx.status}) — ${signalType} signal ignored`);
+          }
           continue;
         }
         // If scoreCtx is null, we couldn't match teams (non-sports market or unknown teams)
