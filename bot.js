@@ -366,6 +366,15 @@ async function poll() {
         continue;
       }
 
+      // One-line status for each position
+      const bidStr = bestBid != null ? `${(bestBid*100).toFixed(0)}c` : 'none';
+      const entryStr = entry != null ? `${(entry*100).toFixed(1)}c` : '?';
+      const gap = bestBid != null && entry != null ? ((bestBid - minSellPrice) * 100).toFixed(0) : '?';
+      const gapSign = bestBid != null && bestBid >= minSellPrice ? '+' : '';
+      console.log(
+        `[auto-sell] ${ticker} ${side.toUpperCase()} ${posSize}x | entry=${entryStr} bid=${bidStr} min=${(minSellPrice*100).toFixed(0)}c (${gapSign}${gap}c)`
+      );
+
       if (bestBid == null) continue;
 
       // Decide whether to sell
