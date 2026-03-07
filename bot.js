@@ -87,7 +87,12 @@ const MOMENTUM_TRAILING_STOP = 0.05;   // sell if price drops 5c from peak
 const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
 
 // Filters
-const MOMENTUM_CONTRACTS = 1;          // test with 1 contract
+// Volume-based position sizing: [minVolume, contracts]
+const MOMENTUM_SIZE_TIERS = [
+  [1000, 5],   // vol >= 1000 → 5 contracts
+  [100,  3],   // vol >= 100  → 3 contracts
+  [20,   1],   // vol >= 20   → 1 contract
+];
 const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
 const MOMENTUM_MIN_BID_DEPTH = 3;      // min bid-side contracts for liquidity
 const MOMENTUM_MIN_VOLUME = 20;        // min contracts traded on ticker before entering
@@ -604,12 +609,13 @@ async function scanSportsMomentum(liveTickerSet) {
 
       // Sell at current price (limit at curPrice - 1c to ensure fill)
       const sellPrice = Math.max(1, Math.round((curPrice - 0.01) * 100));
+      const sellCount = mp.contracts || 1;
       try {
         await getKalshiClient().callApi('CreateOrder', {
           ticker, action: 'sell', side: 'yes', type: 'limit',
-          count: MOMENTUM_CONTRACTS, yes_price: sellPrice,
+          count: sellCount, yes_price: sellPrice,
         });
-        const pnl = (curPrice - mp.entryPrice - 0.01) * MOMENTUM_CONTRACTS;
+        const pnl = (curPrice - mp.entryPrice - 0.01) * sellCount;
         const pnlColor = pnl >= 0 ? C.win : C.loss;
         console.log(`${C.sell}[momentum]    SOLD @ ${sellPrice}c | ${pnlColor}PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${C.reset}`);
         closeTrade(ticker, curPrice, pnl);
@@ -731,16 +737,19 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
+      // Volume-based position sizing
+      const contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
+
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
       const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : `${hoursToClose.toFixed(1)}h`;
       console.log(
         `[momentum] >> ${signalType}: ${title} | ${ticker}\n` +
-        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${m.volume || 0} | closes ${closesIn}`
+        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${volume} | closes ${closesIn} | size=${contractCount}`
       );
 
       if (config.dryRun) {
-        console.log(`[momentum]    DRY RUN: would buy ${MOMENTUM_CONTRACTS} YES @ ${(yesPrice*100).toFixed(0)}c`);
+        console.log(`[momentum]    DRY RUN: would buy ${contractCount} YES @ ${(yesPrice*100).toFixed(0)}c`);
         continue;
       }
 
@@ -750,10 +759,10 @@ async function scanSportsMomentum(liveTickerSet) {
       try {
         const order = await getKalshiClient().callApi('CreateOrder', {
           ticker, action: 'buy', side: 'yes', type: 'limit',
-          count: MOMENTUM_CONTRACTS, yes_price: limitPrice,
+          count: contractCount, yes_price: limitPrice,
         });
         const filled = order?.order?.fill_count ?? 0;
-        console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c${C.reset}`);
+        console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${contractCount} YES @ ${limitPrice}c${C.reset}`);
         // Always mark game as bought to prevent buying the other side,
         // even if fill_count is 0 (limit orders can fill moments later)
         boughtGames.add(gs);
@@ -766,6 +775,7 @@ async function scanSportsMomentum(liveTickerSet) {
             entryPrice: limitPrice / 100,
             highestSeen: limitPrice / 100,
             entryTime: nowMs,
+            contracts: filled,
           });
         }
       } catch (e) {
