@@ -129,6 +129,9 @@ const SCORE_SPORTS = [
   { key: 'basketball/nba', prefix: 'KXNBA' },
 ];
 
+// Universal stop-loss for auto-sell (all positions, not just sports)
+const AUTOSELL_STOP_LOSS = 0.20;       // sell at a loss if down 20c+ from entry
+
 // Filters
 // Volume-based position sizing: [minVolume, contracts]
 const MOMENTUM_SIZE_TIERS = [
@@ -431,6 +434,8 @@ async function poll() {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
       } else if (bestBid >= minSellPrice) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
+      } else if (entry != null && entry - bestBid >= AUTOSELL_STOP_LOSS) {
+        sellReason = `${C.loss}STOP-LOSS: down ${((entry - bestBid)*100).toFixed(0)}c (entry ${(entry*100).toFixed(0)}c, bid ${(bestBid*100).toFixed(0)}c)${C.sell}`;
       }
       if (!sellReason) continue;
 
