@@ -66,7 +66,7 @@ const momentumPositions = new Map();
 const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
 const MOMENTUM_MIN_PRICE = 0.55;       // momentum: don't buy below 55c
-const MOMENTUM_MAX_PRICE = 0.70;       // momentum: don't buy above 70c
+const MOMENTUM_MAX_PRICE = 0.60;       // momentum: don't buy above 60c (better risk/reward)
 const REVERSION_DIP = 0.05;            // mean reversion: 5c dip from avg
 const REVERSION_AVG_WINDOW_MS = 30 * 60 * 1000; // mean reversion: 30min avg
 const REVERSION_MIN_PRICE = 0.55;      // mean reversion: only favorites 55c+
@@ -82,7 +82,8 @@ const MOMENTUM_CONTRACTS = 1;          // test with 1 contract
 const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
 const MOMENTUM_MIN_BID_DEPTH = 3;      // min bid-side contracts for liquidity
 const MOMENTUM_MIN_VOLUME = 20;        // min contracts traded on ticker before entering
-const MOMENTUM_SKIP_PREFIXES = ['KXMVE']; // skip parlays
+const MOMENTUM_MAX_PER_GAME = 2;       // max tickers per game session
+const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB']; // skip parlays and NCAA basketball
 
 export async function startBot() {
   console.log('\n================================================');
@@ -634,9 +635,14 @@ async function scanSportsMomentum(liveTickerSet) {
       return m ? m[1] : t;
     };
 
-    // Build set of game sessions we already hold or bought
+    // Build map of game sessions we already hold or bought -> count of tickers
     const heldGames = new Set();
-    for (const t of liveTickerSet) heldGames.add(gameSession(t));
+    const gameSessionCount = new Map();
+    for (const t of liveTickerSet) {
+      const gs = gameSession(t);
+      heldGames.add(gs);
+      gameSessionCount.set(gs, (gameSessionCount.get(gs) || 0) + 1);
+    }
     const boughtGames = new Set();
 
     for (const m of markets) {
@@ -687,9 +693,11 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!signalType) continue;
 
       // --- Filters ---
-      // Skip if we already hold this game (cross-market-type dedup)
+      // Skip if we already hold this ticker or hit the per-game cap
       const gs = gameSession(ticker);
-      if (liveTickerSet.has(ticker) || heldGames.has(gs) || boughtGames.has(gs)) continue;
+      if (liveTickerSet.has(ticker) || boughtGames.has(gs)) continue;
+      const gsCount = gameSessionCount.get(gs) || 0;
+      if (gsCount >= MOMENTUM_MAX_PER_GAME) continue;
 
       // Time-to-close: prefer markets closing sooner (more reliable signal)
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
@@ -751,6 +759,7 @@ async function scanSportsMomentum(liveTickerSet) {
         boughtGames.add(gs);
         liveTickerSet.add(ticker);
         heldGames.add(gs);
+        gameSessionCount.set(gs, (gameSessionCount.get(gs) || 0) + 1);
         if (filled > 0) {
           recordTrade(ticker, 'yes', limitPrice / 100, limitPrice / 100, filled);
           momentumPositions.set(ticker, {
