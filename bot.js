@@ -81,6 +81,7 @@ const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
 const MOMENTUM_CONTRACTS = 1;          // test with 1 contract
 const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
 const MOMENTUM_MIN_BID_DEPTH = 3;      // min bid-side contracts for liquidity
+const MOMENTUM_MIN_VOLUME = 20;        // min contracts traded on ticker before entering
 const MOMENTUM_SKIP_PREFIXES = ['KXMVE']; // skip parlays
 
 export async function startBot() {
@@ -682,12 +683,18 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
+      // Volume check: require enough trades to confirm game is in progress
+      const volume = m.volume || 0;
+      if (volume < MOMENTUM_MIN_VOLUME) {
+        continue;
+      }
+
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
       const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : `${hoursToClose.toFixed(1)}h`;
       console.log(
         `[momentum] >> ${signalType}: ${title} | ${ticker}\n` +
-        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} | closes ${closesIn}`
+        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${m.volume || 0} | closes ${closesIn}`
       );
 
       if (config.dryRun) {
@@ -705,6 +712,11 @@ async function scanSportsMomentum(liveTickerSet) {
         });
         const filled = order?.order?.fill_count ?? 0;
         console.log(`[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c`);
+        // Always mark game as bought to prevent buying the other side,
+        // even if fill_count is 0 (limit orders can fill moments later)
+        boughtGames.add(gs);
+        liveTickerSet.add(ticker);
+        heldGames.add(gs);
         if (filled > 0) {
           recordTrade(ticker, 'yes', limitPrice / 100, limitPrice / 100, filled);
           momentumPositions.set(ticker, {
@@ -712,7 +724,6 @@ async function scanSportsMomentum(liveTickerSet) {
             highestSeen: limitPrice / 100,
             entryTime: nowMs,
           });
-          boughtGames.add(gs);
         }
       } catch (e) {
         console.error(`[momentum]    Order failed: ${e.message}`);
