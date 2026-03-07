@@ -59,14 +59,29 @@ const closedPnl = [];
 // --- Sports momentum scanner ---
 // Price history: ticker -> [{price, time}]
 const priceHistory = new Map();
-const MOMENTUM_MIN_MOVE = 0.05;     // 5c move required
-const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
-const MOMENTUM_MIN_PRICE = 0.55;    // don't buy below 55c
-const MOMENTUM_MAX_PRICE = 0.70;    // don't buy above 70c
-const MOMENTUM_CONTRACTS = 1;       // test with 1 contract
-const MOMENTUM_MAX_HOURS = 48;      // markets closing within 48h
-// Skip parlays and multi-leg markets
-const MOMENTUM_SKIP_PREFIXES = ['KXMVE'];
+// Active momentum positions: ticker -> {entryPrice, highestSeen, entryTime}
+const momentumPositions = new Map();
+
+// Entry signals
+const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
+const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
+const MOMENTUM_MIN_PRICE = 0.55;       // momentum: don't buy below 55c
+const MOMENTUM_MAX_PRICE = 0.70;       // momentum: don't buy above 70c
+const REVERSION_DIP = 0.05;            // mean reversion: 5c dip from avg
+const REVERSION_AVG_WINDOW_MS = 30 * 60 * 1000; // mean reversion: 30min avg
+const REVERSION_MIN_PRICE = 0.55;      // mean reversion: only favorites 55c+
+const REVERSION_MAX_PRICE = 0.80;      // mean reversion: cap at 80c
+
+// Exit thresholds
+const MOMENTUM_STOP_LOSS = 0.10;       // sell if price drops 10c below entry
+const MOMENTUM_TRAILING_STOP = 0.05;   // sell if price drops 5c from peak
+const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
+
+// Filters
+const MOMENTUM_CONTRACTS = 1;          // test with 1 contract
+const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
+const MOMENTUM_MIN_BID_DEPTH = 3;      // min bid-side contracts for liquidity
+const MOMENTUM_SKIP_PREFIXES = ['KXMVE']; // skip parlays
 
 export async function startBot() {
   console.log('\n========================================');
@@ -501,110 +516,203 @@ async function poll() {
 }
 
 /**
- * Sports momentum scanner — fetch markets closing soon, detect 5c+ moves,
- * buy 1 contract on momentum breakouts in the 55-70c range.
+ * Sports momentum scanner with mean reversion, stop-loss, trailing stop,
+ * liquidity checks, time-to-close weighting, and cross-game dedup.
  */
 async function scanSportsMomentum(liveTickerSet) {
   try {
-    // Fetch markets closing within MOMENTUM_MAX_HOURS
-    // Kalshi API expects unix timestamps (seconds), not ISO strings
     const now = Date.now();
-    const minClose = Math.floor((now - 60 * 1000) / 1000);  // 1min ago
+    const minClose = Math.floor((now - 60 * 1000) / 1000);
     const maxClose = Math.floor((now + MOMENTUM_MAX_HOURS * 60 * 60 * 1000) / 1000);
     const url = `https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&status=open&min_close_ts=${minClose}&max_close_ts=${maxClose}`;
 
     const resp = await fetch(url);
-    if (!resp.ok) {
-      console.log(`[momentum] Kalshi API ${resp.status}`);
-      return;
-    }
+    if (!resp.ok) { console.log(`[momentum] Kalshi API ${resp.status}`); return; }
     const data = await resp.json();
     const markets = data.markets || [];
-    if (!markets.length) {
-      console.log(`[momentum] No markets closing within ${MOMENTUM_MAX_HOURS}h`);
-      return;
+    if (!markets.length) { console.log(`[momentum] No markets closing within ${MOMENTUM_MAX_HOURS}h`); return; }
+
+    // Build a price lookup from the fetched markets for exit checks
+    const currentPrices = new Map();
+    for (const m of markets) {
+      if (!m.ticker) continue;
+      const p = (m.yes_ask > 1 ? m.yes_ask : (m.last_price || 0)) / 100;
+      if (p > 0) currentPrices.set(m.ticker, p);
     }
 
-    console.log(`[momentum] Scanning ${markets.length} markets closing within ${MOMENTUM_MAX_HOURS}h`);
+    // --- Step 1: Check exits for active momentum positions ---
+    let exits = 0;
+    for (const [ticker, mp] of momentumPositions) {
+      const curPrice = currentPrices.get(ticker);
+      if (curPrice == null) continue;
+
+      // Update highest seen price (for trailing stop)
+      if (curPrice > mp.highestSeen) mp.highestSeen = curPrice;
+
+      let exitReason = null;
+      if (curPrice <= mp.entryPrice - MOMENTUM_STOP_LOSS) {
+        exitReason = `STOP-LOSS (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
+      } else if (curPrice <= mp.highestSeen - MOMENTUM_TRAILING_STOP) {
+        exitReason = `TRAILING-STOP (${(curPrice*100).toFixed(0)}c, peak ${(mp.highestSeen*100).toFixed(0)}c)`;
+      } else if (curPrice >= mp.entryPrice + MOMENTUM_TAKE_PROFIT) {
+        exitReason = `TAKE-PROFIT (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
+      }
+
+      if (!exitReason) continue;
+      console.log(`[momentum] EXIT ${ticker}: ${exitReason}`);
+
+      if (config.dryRun) {
+        console.log(`[momentum]    DRY RUN: would sell`);
+        momentumPositions.delete(ticker);
+        continue;
+      }
+
+      // Sell at current price (limit at curPrice - 1c to ensure fill)
+      const sellPrice = Math.max(1, Math.round((curPrice - 0.01) * 100));
+      try {
+        await getKalshiClient().callApi('CreateOrder', {
+          ticker, action: 'sell', side: 'yes', type: 'limit',
+          count: MOMENTUM_CONTRACTS, yes_price: sellPrice,
+        });
+        const pnl = (curPrice - mp.entryPrice - 0.01) * MOMENTUM_CONTRACTS;
+        console.log(`[momentum]    SOLD @ ${sellPrice}c | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        closeTrade(ticker, curPrice, pnl);
+        exits++;
+      } catch (e) {
+        console.error(`[momentum]    Sell failed: ${e.message}`);
+      }
+      momentumPositions.delete(ticker);
+      await sleep(1500);
+    }
+
+    // --- Step 2: Scan for new signals ---
+    console.log(`[momentum] Scanning ${markets.length} markets (${momentumPositions.size} active, ${exits} exited)`);
 
     let signals = 0;
     const nowMs = Date.now();
 
-    // Extract game prefix: everything before the last dash.
-    // e.g., KXNCAABBGAME-26MAR061930LTBSAJ-LTB → KXNCAABBGAME-26MAR061930LTBSAJ
-    // This groups opposite sides of the same game/event.
-    const gamePrefix = (t) => { const i = t.lastIndexOf('-'); return i > 0 ? t.substring(0, i) : t; };
+    // Game session ID: extract date+time+teams portion to catch cross-market-type
+    // correlation (e.g., KXWBCTOTAL and KXWBCSPREAD for the same game).
+    // Matches patterns like 26MAR061900NICDOM from the ticker.
+    const gameSession = (t) => {
+      const m = t.match(/(\d{2}[A-Z]{3}\d{4,6}[A-Z]{2,})/);
+      return m ? m[1] : t;
+    };
 
-    // Build set of game prefixes we already hold positions in
-    const heldGamePrefixes = new Set();
-    for (const t of liveTickerSet) heldGamePrefixes.add(gamePrefix(t));
-    // Track game prefixes bought this cycle
-    const boughtGamePrefixes = new Set();
+    // Build set of game sessions we already hold or bought
+    const heldGames = new Set();
+    for (const t of liveTickerSet) heldGames.add(gameSession(t));
+    const boughtGames = new Set();
 
     for (const m of markets) {
       const ticker = m.ticker;
       if (!ticker) continue;
       if (MOMENTUM_SKIP_PREFIXES.some(p => ticker.startsWith(p))) continue;
 
-      // Current yes price from the market data (last trade or mid)
-      const rawPrice = m.yes_ask > 1 ? m.yes_ask : (m.last_price || 0);
-      const yesPrice = rawPrice / 100;
+      const yesPrice = currentPrices.get(ticker);
       if (!yesPrice || yesPrice < 0.05) continue;
 
-      // Update price history
+      // Update price history (keep 2x the longer window for mean reversion)
       if (!priceHistory.has(ticker)) priceHistory.set(ticker, []);
       const history = priceHistory.get(ticker);
       history.push({ price: yesPrice, time: nowMs });
-
-      // Trim old entries (older than 2x window to keep some context)
-      while (history.length > 0 && history[0].time < nowMs - MOMENTUM_WINDOW_MS * 2) {
+      while (history.length > 0 && history[0].time < nowMs - REVERSION_AVG_WINDOW_MS * 2) {
         history.shift();
       }
 
-      // Need at least 2 data points to detect movement
       if (history.length < 2) continue;
 
-      // Find the price from ~MOMENTUM_WINDOW_MS ago
-      const windowStart = nowMs - MOMENTUM_WINDOW_MS;
-      const oldEntry = history.find(h => h.time >= windowStart) || history[0];
+      // --- Signal detection ---
+      let signalType = null;
+      let signalDetail = '';
+
+      // A) Momentum: 5c+ rise in 5 minutes, price 55-70c
+      const momentumStart = nowMs - MOMENTUM_WINDOW_MS;
+      const oldEntry = history.find(h => h.time >= momentumStart) || history[0];
       const priceMove = yesPrice - oldEntry.price;
 
-      // Check momentum conditions
-      if (priceMove < MOMENTUM_MIN_MOVE) continue;
-      if (yesPrice < MOMENTUM_MIN_PRICE || yesPrice > MOMENTUM_MAX_PRICE) continue;
+      if (priceMove >= MOMENTUM_MIN_MOVE && yesPrice >= MOMENTUM_MIN_PRICE && yesPrice <= MOMENTUM_MAX_PRICE) {
+        signalType = 'MOMENTUM';
+        signalDetail = `${(oldEntry.price*100).toFixed(0)}c->${(yesPrice*100).toFixed(0)}c (+${(priceMove*100).toFixed(0)}c/${Math.round((nowMs-oldEntry.time)/1000)}s)`;
+      }
 
-      // Skip if we already hold this ticker or any side of the same game
-      const gp = gamePrefix(ticker);
-      if (liveTickerSet.has(ticker) || heldGamePrefixes.has(gp) || boughtGamePrefixes.has(gp)) continue;
+      // B) Mean reversion: favorite (55-80c avg) dips 5c+ below 30min average
+      if (!signalType) {
+        const avgWindow = history.filter(h => h.time >= nowMs - REVERSION_AVG_WINDOW_MS);
+        if (avgWindow.length >= 3) {
+          const avg = avgWindow.reduce((s, h) => s + h.price, 0) / avgWindow.length;
+          const dip = avg - yesPrice;
+          if (dip >= REVERSION_DIP && avg >= REVERSION_MIN_PRICE && avg <= REVERSION_MAX_PRICE) {
+            signalType = 'REVERSION';
+            signalDetail = `avg ${(avg*100).toFixed(0)}c, now ${(yesPrice*100).toFixed(0)}c (dip ${(dip*100).toFixed(0)}c)`;
+          }
+        }
+      }
+
+      if (!signalType) continue;
+
+      // --- Filters ---
+      // Skip if we already hold this game (cross-market-type dedup)
+      const gs = gameSession(ticker);
+      if (liveTickerSet.has(ticker) || heldGames.has(gs) || boughtGames.has(gs)) continue;
+
+      // Time-to-close: prefer markets closing sooner (more reliable signal)
+      const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
+      const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
+      // Skip if closing > 6h away (signal less reliable for distant games)
+      if (hoursToClose > 6) continue;
+
+      // Liquidity check: fetch orderbook, require min bid depth
+      let bestBid = null;
+      let bidDepth = 0;
+      try {
+        const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`);
+        if (obResp.ok) {
+          const obData = await obResp.json();
+          const ob = obData.orderbook || obData;
+          const yesBids = ob.yes || [];
+          bidDepth = yesBids.reduce((s, lvl) => s + lvl[1], 0);
+          if (yesBids.length) bestBid = yesBids[yesBids.length - 1][0] / 100;
+        }
+      } catch {}
+      await sleep(500);
+
+      if (bidDepth < MOMENTUM_MIN_BID_DEPTH) {
+        // Not enough liquidity to exit
+        continue;
+      }
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
+      const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : `${hoursToClose.toFixed(1)}h`;
       console.log(
-        `[momentum] >> ${title} | ${ticker}\n` +
-        `[momentum]    ${(oldEntry.price*100).toFixed(0)}c -> ${(yesPrice*100).toFixed(0)}c (+${(priceMove*100).toFixed(0)}c in ${Math.round((nowMs - oldEntry.time)/1000)}s) | closes ${m.close_time || '?'}`
+        `[momentum] >> ${signalType}: ${title} | ${ticker}\n` +
+        `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} | closes ${closesIn}`
       );
 
-      // Buy 1 contract
       if (config.dryRun) {
         console.log(`[momentum]    DRY RUN: would buy ${MOMENTUM_CONTRACTS} YES @ ${(yesPrice*100).toFixed(0)}c`);
         continue;
       }
 
-      const limitPrice = Math.min(Math.round((yesPrice + 0.02) * 100), 70); // cap at 70c
+      // Place order at mid price (between best bid and ask) instead of ask+2c
+      const midPrice = bestBid ? Math.round(((bestBid + yesPrice) / 2) * 100) : Math.round(yesPrice * 100);
+      const limitPrice = Math.min(midPrice, 80); // hard cap at 80c
       try {
         const order = await getKalshiClient().callApi('CreateOrder', {
-          ticker,
-          action: 'buy',
-          side: 'yes',
-          type: 'limit',
-          count: MOMENTUM_CONTRACTS,
-          yes_price: limitPrice,
+          ticker, action: 'buy', side: 'yes', type: 'limit',
+          count: MOMENTUM_CONTRACTS, yes_price: limitPrice,
         });
         const filled = order?.order?.fill_count ?? 0;
         console.log(`[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c`);
         if (filled > 0) {
-          recordTrade(ticker, 'yes', yesPrice, limitPrice / 100, filled);
-          boughtGamePrefixes.add(gp);
+          recordTrade(ticker, 'yes', limitPrice / 100, limitPrice / 100, filled);
+          momentumPositions.set(ticker, {
+            entryPrice: limitPrice / 100,
+            highestSeen: limitPrice / 100,
+            entryTime: nowMs,
+          });
+          boughtGames.add(gs);
         }
       } catch (e) {
         console.error(`[momentum]    Order failed: ${e.message}`);
@@ -613,7 +721,7 @@ async function scanSportsMomentum(liveTickerSet) {
     }
 
     if (signals === 0) {
-      console.log(`[momentum] No momentum signals this cycle`);
+      console.log(`[momentum] No signals this cycle`);
     }
   } catch (e) {
     console.warn(`[momentum] Scanner error: ${e.message}`);
