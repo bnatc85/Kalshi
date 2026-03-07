@@ -86,8 +86,8 @@ const MOMENTUM_STOP_LOSS = 0.10;       // sell if price drops 10c below entry
 const MOMENTUM_TRAILING_STOP = 0.05;   // sell if price drops 5c from peak
 const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
 
-// Tournament settings (golf, etc.) — longer windows, bigger moves
-const TOURNEY_SERIES = ['KXPGATOUR', 'KXPGAH2H', 'KXPGATOP5', 'KXPGATOP10', 'KXPGATOP20', 'KXPGAMAKECUT', 'KXPGAR1LEAD', 'KXPGAR2LEAD', 'KXPGAR3LEAD', 'KXLIVH2H', 'KXLIVTOUR', 'KXDPWORLDTOUR'];
+// Tournament settings (golf, etc.) — DISABLED: momentum doesn't fit multi-day events
+const TOURNEY_SERIES = []; // was: ['KXPGATOUR', 'KXPGAH2H', ...]
 const TOURNEY_MIN_MOVE = 0.12;         // 12c move (significant leaderboard shift)
 const TOURNEY_WINDOW_MS = 30 * 60 * 1000; // 30 min window
 const TOURNEY_MIN_PRICE = 0.08;        // contenders start low
