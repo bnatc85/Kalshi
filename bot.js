@@ -85,9 +85,9 @@ const MOMENTUM_MIN_VOLUME = 20;        // min contracts traded on ticker before 
 const MOMENTUM_SKIP_PREFIXES = ['KXMVE']; // skip parlays
 
 export async function startBot() {
-  console.log('\n========================================');
-  console.log('  Signal BonBon — Kalshi-Only Bot');
-  console.log('========================================');
+  console.log('\n================================================');
+  console.log('  Signal BonBon — Sports Momentum Trader v1.1');
+  console.log('================================================');
   console.log(`Mode:           ${config.dryRun ? 'DRY RUN' : 'LIVE'}`);
   console.log(`Poll interval:  ${config.pollIntervalSeconds}s`);
   console.log(`Min divergence: ${config.minDivergenceBps} bps`);
