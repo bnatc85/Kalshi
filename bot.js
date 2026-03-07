@@ -88,17 +88,18 @@ const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
 
 // Tournament settings (golf, etc.) — longer windows, bigger moves
 const TOURNEY_SERIES = ['KXPGATOUR', 'KXPGAH2H', 'KXPGATOP5', 'KXPGATOP10', 'KXPGATOP20', 'KXPGAMAKECUT', 'KXPGAR1LEAD', 'KXPGAR2LEAD', 'KXPGAR3LEAD', 'KXLIVH2H', 'KXLIVTOUR', 'KXDPWORLDTOUR'];
-const TOURNEY_MIN_MOVE = 0.08;         // 8c move (real leaderboard shift)
+const TOURNEY_MIN_MOVE = 0.12;         // 12c move (significant leaderboard shift)
 const TOURNEY_WINDOW_MS = 30 * 60 * 1000; // 30 min window
 const TOURNEY_MIN_PRICE = 0.08;        // contenders start low
-const TOURNEY_MAX_PRICE = 0.50;        // don't chase heavy favorites
+const TOURNEY_MAX_PRICE = 0.35;        // don't buy above 35c (too much downside)
 const TOURNEY_STOP_LOSS = 0.15;        // wider stop (multi-day event)
 const TOURNEY_TRAILING_STOP = 0.08;    // wider trailing stop
 const TOURNEY_TAKE_PROFIT = 0.20;      // let winners run
-const TOURNEY_MIN_VOLUME = 100;        // min volume for tournament markets
-const TOURNEY_REVERSION_DIP = 0.08;    // 8c dip for mean reversion
+const TOURNEY_MIN_VOLUME = 150;        // higher vol required for tournaments
+const TOURNEY_REVERSION_DIP = 0.12;    // 12c dip for mean reversion
 const TOURNEY_REVERSION_MIN = 0.10;    // reversion: min avg price
-const TOURNEY_REVERSION_MAX = 0.60;    // reversion: max avg price
+const TOURNEY_REVERSION_MAX = 0.50;    // reversion: max avg price
+const TOURNEY_MAX_PER_PLAYER = 1;      // max 1 market type per player
 
 // Contrarian/Fade strategy — buy No when Yes spikes too high
 const FADE_MIN_SPIKE = 0.05;           // 5c+ spike triggers fade
@@ -727,9 +728,22 @@ async function scanSportsMomentum(liveTickerSet) {
     // Game session ID: extract date+time+teams portion to catch cross-market-type
     // correlation (e.g., KXWBCTOTAL and KXWBCSPREAD for the same game).
     // Matches patterns like 26MAR061900NICDOM from the ticker.
+    // For tournaments: extract player abbreviation (e.g., TFLE from KXPGATOP20-ARPIPBM26-TFLE)
+    // so multiple market types for the same player get grouped.
     const gameSession = (t) => {
-      const m = t.match(/(\d{2}[A-Z]{3}\d{4,6}[A-Z]{2,})/);
-      return m ? m[1] : t;
+      // Sports game tickers: 26MAR061900NICDOM
+      const sports = t.match(/(\d{2}[A-Z]{3}\d{4,6}[A-Z]{2,})/);
+      if (sports) return sports[1];
+      // Tournament tickers: last segment after dash is the player (e.g., -TFLE)
+      // Also handle H2H: KXPGAH2H-ARPIPBM26TFLEMFIT-TFLE → player is TFLE
+      const parts = t.split('-');
+      if (parts.length >= 3) {
+        const player = parts[parts.length - 1];
+        // Extract event ID (e.g., ARPIPBM26) from the middle part
+        const event = parts[1]?.match(/^[A-Z]+\d+/)?.[0] || parts[1];
+        return `${event}-${player}`;
+      }
+      return t;
     };
 
     // Build map of game sessions we already hold or bought -> count of tickers
@@ -815,11 +829,12 @@ async function scanSportsMomentum(liveTickerSet) {
       }
 
       // --- Filters (before orderbook fetch to save API calls) ---
-      // Skip if we already hold this ticker or hit the per-game cap
+      // Skip if we already hold this ticker or hit the per-game/player cap
       const gs = gameSession(ticker);
       if (liveTickerSet.has(ticker) || boughtGames.has(gs)) continue;
       const gsCount = gameSessionCount.get(gs) || 0;
-      if (gsCount >= MOMENTUM_MAX_PER_GAME) continue;
+      const maxPerSession = isTourney ? TOURNEY_MAX_PER_PLAYER : MOMENTUM_MAX_PER_GAME;
+      if (gsCount >= maxPerSession) continue;
 
       // Time-to-close filter (skip for tournaments — they close in days)
       if (!isTourney) {
