@@ -100,6 +100,23 @@ const TOURNEY_REVERSION_DIP = 0.08;    // 8c dip for mean reversion
 const TOURNEY_REVERSION_MIN = 0.10;    // reversion: min avg price
 const TOURNEY_REVERSION_MAX = 0.60;    // reversion: max avg price
 
+// Contrarian/Fade strategy — buy No when Yes spikes too high
+const FADE_MIN_SPIKE = 0.05;           // 5c+ spike triggers fade
+const FADE_WINDOW_MS = 5 * 60 * 1000;  // spike within 5 minutes
+const FADE_MIN_YES = 0.65;            // only fade when Yes >= 65c (No <= 35c)
+const FADE_MAX_YES = 0.85;            // don't fade above 85c (too certain)
+
+// Settlement sniping — buy near-certain outcomes for guaranteed small profit
+const SNIPE_MIN_BID = 0.95;           // min bid price to consider sniping
+const SNIPE_MAX_CONTRACTS = 10;       // max contracts per snipe
+const SNIPE_SERIES = ['KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNBAGAME'];
+
+// Orderbook imbalance — signal based on bid depth ratio
+const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
+
+// Entertainment markets (Netflix etc.)
+const ENTERTAINMENT_SERIES = ['KXNETFLIXRANKSHOWGLOBAL', 'KXNETFLIXRANKMOVIEGLOBAL', 'KXNETFLIXRANKSHOW', 'KXNETFLIXRANKMOVIE', 'KXSURVIVORELIMINATION'];
+
 // Filters
 // Volume-based position sizing: [minVolume, contracts]
 const MOMENTUM_SIZE_TIERS = [
@@ -115,7 +132,7 @@ const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB']; // skip parlays and NCAA b
 
 export async function startBot() {
   console.log('\n================================================');
-  console.log('  Signal BonBon — Sports Momentum Trader v1.1');
+  console.log('  Signal BonBon — Sports Momentum Trader v2.0');
   console.log('================================================');
   console.log(`Mode:           ${config.dryRun ? 'DRY RUN' : 'LIVE'}`);
   console.log(`Poll interval:  ${config.pollIntervalSeconds}s`);
@@ -479,6 +496,9 @@ async function poll() {
   // 4b. Sports momentum scanner
   await scanSportsMomentum(liveTickerSet);
 
+  // 4c. Settlement sniping scanner
+  await scanSettlementSnipes(liveTickerSet);
+
   for (const sig of signals) {
     if (positions.length >= config.maxOpenPositions) break;
     const alreadyOpen = positions.some(p => p.marketLabel === sig.marketLabel);
@@ -585,9 +605,10 @@ async function scanSportsMomentum(liveTickerSet) {
     const data = await resp.json();
     const markets = data.markets || [];
 
-    // Also fetch tournament markets (golf etc.) — no close time filter
+    // Also fetch tournament + entertainment markets — no close time filter
     const tourneyTickers = new Set();
-    for (const series of TOURNEY_SERIES) {
+    const allSeries = [...TOURNEY_SERIES, ...ENTERTAINMENT_SERIES];
+    for (const series of allSeries) {
       try {
         const tResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
         if (tResp.ok) {
@@ -616,8 +637,12 @@ async function scanSportsMomentum(liveTickerSet) {
     // --- Step 1: Check exits for active momentum positions ---
     let exits = 0;
     for (const [ticker, mp] of momentumPositions) {
-      const curPrice = currentPrices.get(ticker);
-      if (curPrice == null) continue;
+      const yesNow = currentPrices.get(ticker);
+      if (yesNow == null) continue;
+
+      // For No positions, track the No price (inverse of Yes)
+      const posSide = mp.side || 'yes';
+      const curPrice = posSide === 'no' ? (1 - yesNow) : yesNow;
 
       // Update highest seen price (for trailing stop)
       if (curPrice > mp.highestSeen) mp.highestSeen = curPrice;
@@ -636,7 +661,7 @@ async function scanSportsMomentum(liveTickerSet) {
       }
 
       if (!exitReason) continue;
-      console.log(`[momentum] EXIT ${ticker}: ${exitReason}`);
+      console.log(`[momentum] EXIT ${ticker} ${posSide.toUpperCase()}: ${exitReason}`);
 
       if (config.dryRun) {
         console.log(`[momentum]    DRY RUN: would sell`);
@@ -645,16 +670,19 @@ async function scanSportsMomentum(liveTickerSet) {
       }
 
       // Sell at current price (limit at curPrice - 1c to ensure fill)
-      const sellPrice = Math.max(1, Math.round((curPrice - 0.01) * 100));
+      const sellPriceCents = Math.max(1, Math.round((curPrice - 0.01) * 100));
       const sellCount = mp.contracts || 1;
       try {
         await getKalshiClient().callApi('CreateOrder', {
-          ticker, action: 'sell', side: 'yes', type: 'limit',
-          count: sellCount, yes_price: sellPrice,
+          ticker, action: 'sell', side: posSide, type: 'limit',
+          count: sellCount,
+          ...(posSide === 'no'
+            ? { no_price: sellPriceCents }
+            : { yes_price: sellPriceCents }),
         });
         const pnl = (curPrice - mp.entryPrice - 0.01) * sellCount;
         const pnlColor = pnl >= 0 ? C.win : C.loss;
-        console.log(`${C.sell}[momentum]    SOLD @ ${sellPrice}c | ${pnlColor}PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${C.reset}`);
+        console.log(`${C.sell}[momentum]    SOLD ${posSide.toUpperCase()} @ ${sellPriceCents}c | ${pnlColor}PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${C.reset}`);
         closeTrade(ticker, curPrice, pnl);
         exits++;
       } catch (e) {
@@ -721,9 +749,10 @@ async function scanSportsMomentum(liveTickerSet) {
       // --- Signal detection ---
       let signalType = null;
       let signalDetail = '';
+      let tradeSide = 'yes'; // default: buy Yes
       const tag = isTourney ? 'TOURNEY' : 'MOMENTUM';
 
-      // A) Momentum breakout
+      // A) Momentum breakout (buy Yes on rising price)
       const momentumStart = nowMs - pWindow;
       const oldEntry = history.find(h => h.time >= momentumStart) || history[0];
       const priceMove = yesPrice - oldEntry.price;
@@ -733,7 +762,20 @@ async function scanSportsMomentum(liveTickerSet) {
         signalDetail = `${(oldEntry.price*100).toFixed(0)}c->${(yesPrice*100).toFixed(0)}c (+${(priceMove*100).toFixed(0)}c/${Math.round((nowMs-oldEntry.time)/1000)}s)`;
       }
 
-      // B) Mean reversion dip
+      // B) Contrarian/Fade: buy No when Yes spikes too high (better risk/reward)
+      if (!signalType && !isTourney) {
+        const fadeStart = nowMs - FADE_WINDOW_MS;
+        const fadeOld = history.find(h => h.time >= fadeStart) || history[0];
+        const fadeSpike = yesPrice - fadeOld.price;
+        if (fadeSpike >= FADE_MIN_SPIKE && yesPrice >= FADE_MIN_YES && yesPrice <= FADE_MAX_YES) {
+          signalType = 'FADE';
+          tradeSide = 'no';
+          const noPrice = ((1 - yesPrice) * 100).toFixed(0);
+          signalDetail = `Yes spiked ${(fadeOld.price*100).toFixed(0)}c->${(yesPrice*100).toFixed(0)}c, buying No @ ~${noPrice}c`;
+        }
+      }
+
+      // C) Mean reversion dip (buy Yes on dip below average)
       if (!signalType) {
         const avgWindow = history.filter(h => h.time >= nowMs - (isTourney ? TOURNEY_WINDOW_MS : REVERSION_AVG_WINDOW_MS));
         if (avgWindow.length >= 3) {
@@ -746,9 +788,7 @@ async function scanSportsMomentum(liveTickerSet) {
         }
       }
 
-      if (!signalType) continue;
-
-      // --- Filters ---
+      // --- Filters (before orderbook fetch to save API calls) ---
       // Skip if we already hold this ticker or hit the per-game cap
       const gs = gameSession(ticker);
       if (liveTickerSet.has(ticker) || boughtGames.has(gs)) continue;
@@ -762,20 +802,53 @@ async function scanSportsMomentum(liveTickerSet) {
         if (hoursToClose > 6) continue;
       }
 
+      // Skip if no signal yet AND this market wouldn't qualify for OB imbalance
+      // (OB imbalance only applies to non-tourney in-game markets within price range)
+      if (!signalType && (isTourney || yesPrice < 0.20 || yesPrice > pMaxPrice)) continue;
+
       // Liquidity check: fetch orderbook, require min bid depth
       let bestBid = null;
       let bidDepth = 0;
+      let yesBidDepth = 0, noBidDepth = 0;
+      let obYesBids = [], obNoBids = [];
       try {
         const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`);
         if (obResp.ok) {
           const obData = await obResp.json();
           const ob = obData.orderbook || obData;
-          const yesBids = ob.yes || [];
-          bidDepth = yesBids.reduce((s, lvl) => s + lvl[1], 0);
-          if (yesBids.length) bestBid = yesBids[yesBids.length - 1][0] / 100;
+          obYesBids = ob.yes || [];
+          obNoBids = ob.no || [];
+          yesBidDepth = obYesBids.reduce((s, lvl) => s + lvl[1], 0);
+          noBidDepth = obNoBids.reduce((s, lvl) => s + lvl[1], 0);
         }
       } catch {}
       await sleep(500);
+
+      // D) Orderbook imbalance signal — strong directional bias from depth
+      if (!signalType && !isTourney && yesBidDepth > 0 && noBidDepth > 0) {
+        const yesNoRatio = yesBidDepth / noBidDepth;
+        const noYesRatio = noBidDepth / yesBidDepth;
+        if (yesNoRatio >= OB_IMBALANCE_RATIO && yesPrice >= pMinPrice && yesPrice <= pMaxPrice) {
+          signalType = 'OB-IMBAL';
+          tradeSide = 'yes';
+          signalDetail = `Yes depth ${yesBidDepth} vs No ${noBidDepth} (${yesNoRatio.toFixed(1)}:1)`;
+        } else if (noYesRatio >= OB_IMBALANCE_RATIO && yesPrice >= 0.20 && yesPrice <= 0.45) {
+          signalType = 'OB-IMBAL';
+          tradeSide = 'no';
+          signalDetail = `No depth ${noBidDepth} vs Yes ${yesBidDepth} (${noYesRatio.toFixed(1)}:1)`;
+        }
+      }
+
+      if (!signalType) continue;
+
+      // Set bestBid and bidDepth for the chosen trade side
+      if (tradeSide === 'no') {
+        bidDepth = noBidDepth;
+        if (obNoBids.length) bestBid = obNoBids[obNoBids.length - 1][0] / 100;
+      } else {
+        bidDepth = yesBidDepth;
+        if (obYesBids.length) bestBid = obYesBids[obYesBids.length - 1][0] / 100;
+      }
 
       if (bidDepth < MOMENTUM_MIN_BID_DEPTH) continue;
 
@@ -792,25 +865,36 @@ async function scanSportsMomentum(liveTickerSet) {
       const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
       const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : hoursToClose < 48 ? `${hoursToClose.toFixed(1)}h` : `${Math.round(hoursToClose/24)}d`;
       console.log(
-        `[momentum] >> ${signalType}: ${title} | ${ticker}\n` +
+        `[momentum] >> ${signalType}: ${title} | ${ticker} | ${tradeSide.toUpperCase()}\n` +
         `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${volume} | closes ${closesIn} | size=${contractCount}`
       );
 
       if (config.dryRun) {
-        console.log(`[momentum]    DRY RUN: would buy ${contractCount} YES @ ${(yesPrice*100).toFixed(0)}c`);
+        console.log(`[momentum]    DRY RUN: would buy ${contractCount} ${tradeSide.toUpperCase()} @ ${(tradeSide === 'no' ? (1 - yesPrice) : yesPrice)*100|0}c`);
         continue;
       }
 
       // Place order at mid price (between best bid and ask) instead of ask+2c
-      const midPrice = bestBid ? Math.round(((bestBid + yesPrice) / 2) * 100) : Math.round(yesPrice * 100);
-      const limitPrice = Math.min(midPrice, 80); // hard cap at 80c
+      let limitPrice;
+      if (tradeSide === 'no') {
+        const noAsk = 1 - yesPrice; // approximate No ask
+        const mid = bestBid ? Math.round(((bestBid + noAsk) / 2) * 100) : Math.round(noAsk * 100);
+        limitPrice = Math.min(mid, 45); // cap No buys at 45c
+      } else {
+        const mid = bestBid ? Math.round(((bestBid + yesPrice) / 2) * 100) : Math.round(yesPrice * 100);
+        limitPrice = Math.min(mid, 80); // hard cap at 80c
+      }
       try {
-        const order = await getKalshiClient().callApi('CreateOrder', {
-          ticker, action: 'buy', side: 'yes', type: 'limit',
-          count: contractCount, yes_price: limitPrice,
-        });
+        const orderParams = {
+          ticker, action: 'buy', side: tradeSide, type: 'limit',
+          count: contractCount,
+          ...(tradeSide === 'no'
+            ? { no_price: limitPrice }
+            : { yes_price: limitPrice }),
+        };
+        const order = await getKalshiClient().callApi('CreateOrder', orderParams);
         const filled = order?.order?.fill_count ?? 0;
-        console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${contractCount} YES @ ${limitPrice}c${C.reset}`);
+        console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${contractCount} ${tradeSide.toUpperCase()} @ ${limitPrice}c${C.reset}`);
         // Always mark game as bought to prevent buying the other side,
         // even if fill_count is 0 (limit orders can fill moments later)
         boughtGames.add(gs);
@@ -818,13 +902,14 @@ async function scanSportsMomentum(liveTickerSet) {
         heldGames.add(gs);
         gameSessionCount.set(gs, (gameSessionCount.get(gs) || 0) + 1);
         if (filled > 0) {
-          recordTrade(ticker, 'yes', limitPrice / 100, limitPrice / 100, filled);
+          recordTrade(ticker, tradeSide, limitPrice / 100, limitPrice / 100, filled);
           momentumPositions.set(ticker, {
             entryPrice: limitPrice / 100,
             highestSeen: limitPrice / 100,
             entryTime: nowMs,
             contracts: filled,
             isTourney,
+            side: tradeSide,
           });
         }
       } catch (e) {
@@ -838,6 +923,99 @@ async function scanSportsMomentum(liveTickerSet) {
     }
   } catch (e) {
     console.warn(`[momentum] Scanner error: ${e.message}`);
+  }
+}
+
+/**
+ * Settlement sniping — buy near-certain outcomes (95c+) for small guaranteed profit.
+ * These are markets where one side is nearly settled (e.g. team winning 10-0 in 8th inning).
+ */
+async function scanSettlementSnipes(liveTickerSet) {
+  try {
+    const now = Date.now();
+    const minClose = Math.floor((now - 60 * 1000) / 1000);
+    const maxClose = Math.floor((now + 6 * 60 * 60 * 1000) / 1000); // closing within 6h
+    let snipeMarkets = [];
+
+    for (const series of SNIPE_SERIES) {
+      try {
+        const resp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open&min_close_ts=${minClose}&max_close_ts=${maxClose}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          snipeMarkets.push(...(data.markets || []));
+        }
+      } catch {}
+      await sleep(500);
+    }
+
+    if (!snipeMarkets.length) return;
+
+    let snipes = 0;
+    for (const m of snipeMarkets) {
+      const ticker = m.ticker;
+      if (!ticker || liveTickerSet.has(ticker)) continue;
+
+      // Check orderbook for 95c+ bids
+      try {
+        const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`);
+        if (!obResp.ok) continue;
+        const obData = await obResp.json();
+        const ob = obData.orderbook || obData;
+        const yesBids = ob.yes || [];
+        const noBids = ob.no || [];
+
+        // Check Yes side: if best Yes bid >= 95c, buy Yes
+        let snipeSide = null, snipePrice = null, snipeBid = null;
+        if (yesBids.length) {
+          const bestYes = yesBids[yesBids.length - 1][0] / 100;
+          if (bestYes >= SNIPE_MIN_BID) {
+            snipeSide = 'yes';
+            snipePrice = Math.round(bestYes * 100); // buy at the bid
+            snipeBid = bestYes;
+          }
+        }
+        // Check No side: if best No bid >= 95c, buy No
+        if (!snipeSide && noBids.length) {
+          const bestNo = noBids[noBids.length - 1][0] / 100;
+          if (bestNo >= SNIPE_MIN_BID) {
+            snipeSide = 'no';
+            snipePrice = Math.round(bestNo * 100);
+            snipeBid = bestNo;
+          }
+        }
+
+        if (!snipeSide) continue;
+
+        const title = (m.title || m.subtitle || ticker).substring(0, 50);
+        console.log(`[snipe] >> ${title} | ${ticker} | ${snipeSide.toUpperCase()} bid=${(snipeBid*100).toFixed(0)}c`);
+
+        if (config.dryRun) {
+          console.log(`[snipe]    DRY RUN: would buy ${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c`);
+          continue;
+        }
+
+        const order = await getKalshiClient().callApi('CreateOrder', {
+          ticker, action: 'buy', side: snipeSide, type: 'limit',
+          count: SNIPE_MAX_CONTRACTS,
+          ...(snipeSide === 'no'
+            ? { no_price: snipePrice }
+            : { yes_price: snipePrice }),
+        });
+        const filled = order?.order?.fill_count ?? 0;
+        console.log(`${C.buy}[snipe]    BOUGHT ${filled}/${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c${C.reset}`);
+        liveTickerSet.add(ticker);
+        if (filled > 0) {
+          recordTrade(ticker, snipeSide, snipePrice / 100, snipePrice / 100, filled);
+          snipes++;
+        }
+        await sleep(1500);
+      } catch (e) {
+        console.warn(`[snipe] ${ticker}: ${e.message}`);
+      }
+    }
+    if (snipes > 0) console.log(`[snipe] Placed ${snipes} snipe trades`);
+  } catch (e) {
+    console.warn(`[snipe] Scanner error: ${e.message}`);
   }
 }
 
