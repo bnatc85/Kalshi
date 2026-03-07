@@ -530,6 +530,17 @@ async function scanSportsMomentum(liveTickerSet) {
     let signals = 0;
     const nowMs = Date.now();
 
+    // Extract game prefix: everything before the last dash.
+    // e.g., KXNCAABBGAME-26MAR061930LTBSAJ-LTB → KXNCAABBGAME-26MAR061930LTBSAJ
+    // This groups opposite sides of the same game/event.
+    const gamePrefix = (t) => { const i = t.lastIndexOf('-'); return i > 0 ? t.substring(0, i) : t; };
+
+    // Build set of game prefixes we already hold positions in
+    const heldGamePrefixes = new Set();
+    for (const t of liveTickerSet) heldGamePrefixes.add(gamePrefix(t));
+    // Track game prefixes bought this cycle
+    const boughtGamePrefixes = new Set();
+
     for (const m of markets) {
       const ticker = m.ticker;
       if (!ticker) continue;
@@ -562,8 +573,9 @@ async function scanSportsMomentum(liveTickerSet) {
       if (priceMove < MOMENTUM_MIN_MOVE) continue;
       if (yesPrice < MOMENTUM_MIN_PRICE || yesPrice > MOMENTUM_MAX_PRICE) continue;
 
-      // Skip if we already hold this ticker
-      if (liveTickerSet.has(ticker)) continue;
+      // Skip if we already hold this ticker or any side of the same game
+      const gp = gamePrefix(ticker);
+      if (liveTickerSet.has(ticker) || heldGamePrefixes.has(gp) || boughtGamePrefixes.has(gp)) continue;
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
@@ -592,6 +604,7 @@ async function scanSportsMomentum(liveTickerSet) {
         console.log(`[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c`);
         if (filled > 0) {
           recordTrade(ticker, 'yes', yesPrice, limitPrice / 100, filled);
+          boughtGamePrefixes.add(gp);
         }
       } catch (e) {
         console.error(`[momentum]    Order failed: ${e.message}`);
