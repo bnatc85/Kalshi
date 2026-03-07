@@ -71,7 +71,7 @@ const priceHistory = new Map();
 // Active momentum positions: ticker -> {entryPrice, highestSeen, entryTime}
 const momentumPositions = new Map();
 
-// Entry signals
+// Entry signals — in-game sports
 const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
 const MOMENTUM_MIN_PRICE = 0.55;       // momentum: don't buy below 55c
@@ -81,10 +81,24 @@ const REVERSION_AVG_WINDOW_MS = 30 * 60 * 1000; // mean reversion: 30min avg
 const REVERSION_MIN_PRICE = 0.55;      // mean reversion: only favorites 55c+
 const REVERSION_MAX_PRICE = 0.80;      // mean reversion: cap at 80c
 
-// Exit thresholds
+// Exit thresholds — in-game sports
 const MOMENTUM_STOP_LOSS = 0.10;       // sell if price drops 10c below entry
 const MOMENTUM_TRAILING_STOP = 0.05;   // sell if price drops 5c from peak
 const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
+
+// Tournament settings (golf, etc.) — longer windows, bigger moves
+const TOURNEY_SERIES = ['KXPGATOUR', 'KXPGAH2H', 'KXPGATOP5', 'KXPGATOP10', 'KXPGATOP20', 'KXPGAMAKECUT', 'KXPGAR1LEAD', 'KXPGAR2LEAD', 'KXPGAR3LEAD', 'KXLIVH2H', 'KXLIVTOUR', 'KXDPWORLDTOUR'];
+const TOURNEY_MIN_MOVE = 0.08;         // 8c move (real leaderboard shift)
+const TOURNEY_WINDOW_MS = 30 * 60 * 1000; // 30 min window
+const TOURNEY_MIN_PRICE = 0.08;        // contenders start low
+const TOURNEY_MAX_PRICE = 0.50;        // don't chase heavy favorites
+const TOURNEY_STOP_LOSS = 0.15;        // wider stop (multi-day event)
+const TOURNEY_TRAILING_STOP = 0.08;    // wider trailing stop
+const TOURNEY_TAKE_PROFIT = 0.20;      // let winners run
+const TOURNEY_MIN_VOLUME = 100;        // min volume for tournament markets
+const TOURNEY_REVERSION_DIP = 0.08;    // 8c dip for mean reversion
+const TOURNEY_REVERSION_MIN = 0.10;    // reversion: min avg price
+const TOURNEY_REVERSION_MAX = 0.60;    // reversion: max avg price
 
 // Filters
 // Volume-based position sizing: [minVolume, contracts]
@@ -570,7 +584,26 @@ async function scanSportsMomentum(liveTickerSet) {
     if (!resp.ok) { console.log(`[momentum] Kalshi API ${resp.status}`); return; }
     const data = await resp.json();
     const markets = data.markets || [];
-    if (!markets.length) { console.log(`[momentum] No markets closing within ${MOMENTUM_MAX_HOURS}h`); return; }
+
+    // Also fetch tournament markets (golf etc.) — no close time filter
+    const tourneyTickers = new Set();
+    for (const series of TOURNEY_SERIES) {
+      try {
+        const tResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
+        if (tResp.ok) {
+          const tData = await tResp.json();
+          for (const m of (tData.markets || [])) {
+            if (m.ticker && !markets.some(ex => ex.ticker === m.ticker)) {
+              markets.push(m);
+              tourneyTickers.add(m.ticker);
+            }
+          }
+        }
+      } catch {}
+      await sleep(500);
+    }
+
+    if (!markets.length) { console.log(`[momentum] No markets found`); return; }
 
     // Build a price lookup from the fetched markets for exit checks
     const currentPrices = new Map();
@@ -589,12 +622,16 @@ async function scanSportsMomentum(liveTickerSet) {
       // Update highest seen price (for trailing stop)
       if (curPrice > mp.highestSeen) mp.highestSeen = curPrice;
 
+      const stopLoss = mp.isTourney ? TOURNEY_STOP_LOSS : MOMENTUM_STOP_LOSS;
+      const trailingStop = mp.isTourney ? TOURNEY_TRAILING_STOP : MOMENTUM_TRAILING_STOP;
+      const takeProfit = mp.isTourney ? TOURNEY_TAKE_PROFIT : MOMENTUM_TAKE_PROFIT;
+
       let exitReason = null;
-      if (curPrice <= mp.entryPrice - MOMENTUM_STOP_LOSS) {
+      if (curPrice <= mp.entryPrice - stopLoss) {
         exitReason = `STOP-LOSS (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
-      } else if (curPrice <= mp.highestSeen - MOMENTUM_TRAILING_STOP) {
+      } else if (curPrice <= mp.highestSeen - trailingStop) {
         exitReason = `TRAILING-STOP (${(curPrice*100).toFixed(0)}c, peak ${(mp.highestSeen*100).toFixed(0)}c)`;
-      } else if (curPrice >= mp.entryPrice + MOMENTUM_TAKE_PROFIT) {
+      } else if (curPrice >= mp.entryPrice + takeProfit) {
         exitReason = `TAKE-PROFIT (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
       }
 
@@ -628,7 +665,7 @@ async function scanSportsMomentum(liveTickerSet) {
     }
 
     // --- Step 2: Scan for new signals ---
-    console.log(`[momentum] Scanning ${markets.length} markets (${momentumPositions.size} active, ${exits} exited)`);
+    console.log(`[momentum] Scanning ${markets.length} markets (${tourneyTickers.size} tourney, ${momentumPositions.size} active, ${exits} exited)`);
 
     let signals = 0;
     const nowMs = Date.now();
@@ -656,14 +693,26 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!ticker) continue;
       if (MOMENTUM_SKIP_PREFIXES.some(p => ticker.startsWith(p))) continue;
 
+      const isTourney = tourneyTickers.has(ticker);
       const yesPrice = currentPrices.get(ticker);
       if (!yesPrice || yesPrice < 0.05) continue;
 
+      // Pick parameters based on market type
+      const pMinMove = isTourney ? TOURNEY_MIN_MOVE : MOMENTUM_MIN_MOVE;
+      const pWindow = isTourney ? TOURNEY_WINDOW_MS : MOMENTUM_WINDOW_MS;
+      const pMinPrice = isTourney ? TOURNEY_MIN_PRICE : MOMENTUM_MIN_PRICE;
+      const pMaxPrice = isTourney ? TOURNEY_MAX_PRICE : MOMENTUM_MAX_PRICE;
+      const pRevDip = isTourney ? TOURNEY_REVERSION_DIP : REVERSION_DIP;
+      const pRevMin = isTourney ? TOURNEY_REVERSION_MIN : REVERSION_MIN_PRICE;
+      const pRevMax = isTourney ? TOURNEY_REVERSION_MAX : REVERSION_MAX_PRICE;
+      const pMinVol = isTourney ? TOURNEY_MIN_VOLUME : MOMENTUM_MIN_VOLUME;
+
       // Update price history (keep 2x the longer window for mean reversion)
+      const historyWindow = isTourney ? TOURNEY_WINDOW_MS * 2 : REVERSION_AVG_WINDOW_MS * 2;
       if (!priceHistory.has(ticker)) priceHistory.set(ticker, []);
       const history = priceHistory.get(ticker);
       history.push({ price: yesPrice, time: nowMs });
-      while (history.length > 0 && history[0].time < nowMs - REVERSION_AVG_WINDOW_MS * 2) {
+      while (history.length > 0 && history[0].time < nowMs - historyWindow) {
         history.shift();
       }
 
@@ -672,25 +721,26 @@ async function scanSportsMomentum(liveTickerSet) {
       // --- Signal detection ---
       let signalType = null;
       let signalDetail = '';
+      const tag = isTourney ? 'TOURNEY' : 'MOMENTUM';
 
-      // A) Momentum: 5c+ rise in 5 minutes, price 55-70c
-      const momentumStart = nowMs - MOMENTUM_WINDOW_MS;
+      // A) Momentum breakout
+      const momentumStart = nowMs - pWindow;
       const oldEntry = history.find(h => h.time >= momentumStart) || history[0];
       const priceMove = yesPrice - oldEntry.price;
 
-      if (priceMove >= MOMENTUM_MIN_MOVE && yesPrice >= MOMENTUM_MIN_PRICE && yesPrice <= MOMENTUM_MAX_PRICE) {
-        signalType = 'MOMENTUM';
+      if (priceMove >= pMinMove && yesPrice >= pMinPrice && yesPrice <= pMaxPrice) {
+        signalType = tag;
         signalDetail = `${(oldEntry.price*100).toFixed(0)}c->${(yesPrice*100).toFixed(0)}c (+${(priceMove*100).toFixed(0)}c/${Math.round((nowMs-oldEntry.time)/1000)}s)`;
       }
 
-      // B) Mean reversion: favorite (55-80c avg) dips 5c+ below 30min average
+      // B) Mean reversion dip
       if (!signalType) {
-        const avgWindow = history.filter(h => h.time >= nowMs - REVERSION_AVG_WINDOW_MS);
+        const avgWindow = history.filter(h => h.time >= nowMs - (isTourney ? TOURNEY_WINDOW_MS : REVERSION_AVG_WINDOW_MS));
         if (avgWindow.length >= 3) {
           const avg = avgWindow.reduce((s, h) => s + h.price, 0) / avgWindow.length;
           const dip = avg - yesPrice;
-          if (dip >= REVERSION_DIP && avg >= REVERSION_MIN_PRICE && avg <= REVERSION_MAX_PRICE) {
-            signalType = 'REVERSION';
+          if (dip >= pRevDip && avg >= pRevMin && avg <= pRevMax) {
+            signalType = isTourney ? 'T-REVERSION' : 'REVERSION';
             signalDetail = `avg ${(avg*100).toFixed(0)}c, now ${(yesPrice*100).toFixed(0)}c (dip ${(dip*100).toFixed(0)}c)`;
           }
         }
@@ -705,11 +755,12 @@ async function scanSportsMomentum(liveTickerSet) {
       const gsCount = gameSessionCount.get(gs) || 0;
       if (gsCount >= MOMENTUM_MAX_PER_GAME) continue;
 
-      // Time-to-close: prefer markets closing sooner (more reliable signal)
-      const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
-      const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
-      // Skip if closing > 6h away (signal less reliable for distant games)
-      if (hoursToClose > 6) continue;
+      // Time-to-close filter (skip for tournaments — they close in days)
+      if (!isTourney) {
+        const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
+        const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
+        if (hoursToClose > 6) continue;
+      }
 
       // Liquidity check: fetch orderbook, require min bid depth
       let bestBid = null;
@@ -726,23 +777,20 @@ async function scanSportsMomentum(liveTickerSet) {
       } catch {}
       await sleep(500);
 
-      if (bidDepth < MOMENTUM_MIN_BID_DEPTH) {
-        // Not enough liquidity to exit
-        continue;
-      }
+      if (bidDepth < MOMENTUM_MIN_BID_DEPTH) continue;
 
-      // Volume check: require enough trades to confirm game is in progress
+      // Volume check
       const volume = m.volume || 0;
-      if (volume < MOMENTUM_MIN_VOLUME) {
-        continue;
-      }
+      if (volume < pMinVol) continue;
 
       // Volume-based position sizing
       const contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
-      const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : `${hoursToClose.toFixed(1)}h`;
+      const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
+      const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
+      const closesIn = hoursToClose < 1 ? `${Math.round(hoursToClose*60)}min` : hoursToClose < 48 ? `${hoursToClose.toFixed(1)}h` : `${Math.round(hoursToClose/24)}d`;
       console.log(
         `[momentum] >> ${signalType}: ${title} | ${ticker}\n` +
         `[momentum]    ${signalDetail} | bid=${bestBid ? (bestBid*100).toFixed(0)+'c' : '?'} depth=${bidDepth} vol=${volume} | closes ${closesIn} | size=${contractCount}`
@@ -776,6 +824,7 @@ async function scanSportsMomentum(liveTickerSet) {
             highestSeen: limitPrice / 100,
             entryTime: nowMs,
             contracts: filled,
+            isTourney,
           });
         }
       } catch (e) {
