@@ -116,7 +116,7 @@ const SNIPE_SERIES = ['KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', '
 const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
 
 // Entertainment markets (Netflix etc.)
-const ENTERTAINMENT_SERIES = ['KXNETFLIXRANKSHOWGLOBAL', 'KXNETFLIXRANKMOVIEGLOBAL', 'KXNETFLIXRANKSHOW', 'KXNETFLIXRANKMOVIE', 'KXSURVIVORELIMINATION'];
+const ENTERTAINMENT_SERIES = []; // was: ['KXNETFLIXRANKSHOWGLOBAL', ...] — disabled: multi-day markets don't fit momentum
 
 // Cross-market arbitrage — detect pricing inconsistencies across correlated markets
 const ARB_SERIES = ['KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXMLBSTGAME', 'KXNBAGAME'];
