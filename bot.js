@@ -128,6 +128,9 @@ const SCORE_API_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const SCORE_SPORTS = [
   { key: 'baseball/mlb', prefix: 'KXM' },
   { key: 'basketball/nba', prefix: 'KXNBA' },
+  { key: 'football/nfl', prefix: 'KXNFL' },
+  { key: 'soccer/eng.1', prefix: 'KX' },
+  { key: 'soccer/usa.1', prefix: 'KX' },
 ];
 
 // Universal stop-loss for auto-sell (all positions, not just sports)
@@ -841,6 +844,18 @@ async function scanSportsMomentum(liveTickerSet) {
         const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
         const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
         if (hoursToClose > 6) continue;
+      }
+
+      // Live game filter: only trade when the game is actually in progress
+      // Prevents buying on pre-game price noise
+      if (!isTourney) {
+        const scoreCtx = await getScoreContext(ticker);
+        if (scoreCtx && !scoreCtx.isLive) {
+          // We found the game but it's not live — skip
+          continue;
+        }
+        // If scoreCtx is null, we couldn't match teams (non-sports market or unknown teams)
+        // Let those through — they'll be filtered by other checks
       }
 
       // Skip if no signal yet AND this market wouldn't qualify for OB imbalance
