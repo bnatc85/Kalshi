@@ -56,6 +56,15 @@ function getOpenTrade(ticker) {
 const positions = [];
 const closedPnl = [];
 
+// ANSI colors for trade highlights
+const C = {
+  buy:   '\x1b[1;36m',  // bold cyan
+  sell:  '\x1b[1;35m',  // bold magenta
+  win:   '\x1b[1;32m',  // bold green
+  loss:  '\x1b[1;31m',  // bold red
+  reset: '\x1b[0m',
+};
+
 // --- Sports momentum scanner ---
 // Price history: ticker -> [{price, time}]
 const priceHistory = new Map();
@@ -372,7 +381,7 @@ async function poll() {
       // Cap at 25 contracts per order (same as buy side) — remainder sells next cycle
       const sellPrice = bestBid;
       const sellQty = Math.min(posSize, 25);
-      console.log(`[auto-sell] ${ticker} ${side.toUpperCase()} ${sellQty}x @ ${(sellPrice*100).toFixed(0)}c | ${sellReason}`);
+      console.log(`${C.sell}[auto-sell] SELL ${ticker} ${side.toUpperCase()} ${sellQty}x @ ${(sellPrice*100).toFixed(0)}c | ${sellReason}${C.reset}`);
 
       if (config.dryRun) {
         console.log(`[auto-sell]   -> DRY RUN: would sell`);
@@ -397,9 +406,11 @@ async function poll() {
         const fillCount = order?.order?.fill_count ?? sellQty;
         const fees = parseFloat(order?.order?.taker_fees_dollars || '0');
         const pnl = entry ? (sellPrice - entry) * fillCount - fees : null;
+        const pnlColor = pnl != null && pnl >= 0 ? C.win : C.loss;
         console.log(
-          `[auto-sell]   -> SOLD ${fillCount} contracts` +
-          (pnl != null ? ` | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (after $${fees.toFixed(2)} fees)` : '')
+          `${C.sell}[auto-sell]   -> SOLD ${fillCount} contracts` +
+          (pnl != null ? ` | ${pnlColor}PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (after $${fees.toFixed(2)} fees)${C.sell}` : '') +
+          C.reset
         );
         soldThisCycle.add(ticker);
         // Record in trade ledger — create entry if none exists (manual buys)
@@ -508,7 +519,8 @@ async function poll() {
           pnl = (1 - trade.entryPrice) * (trade.contracts || 1);
         }
         // If result matches our side, we won; otherwise pnl stays as total loss
-        console.log(`[settle] ${trade.ticker} ${trade.side.toUpperCase()} | result=${result || '?'} | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        const sc = pnl >= 0 ? C.win : C.loss;
+        console.log(`${sc}[settle] ${trade.ticker} ${trade.side.toUpperCase()} | result=${result || '?'} | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${C.reset}`);
       }
     } catch (e) {
       console.warn(`[settle] ${trade.ticker}: could not fetch market: ${e.message}`);
@@ -589,7 +601,8 @@ async function scanSportsMomentum(liveTickerSet) {
           count: MOMENTUM_CONTRACTS, yes_price: sellPrice,
         });
         const pnl = (curPrice - mp.entryPrice - 0.01) * MOMENTUM_CONTRACTS;
-        console.log(`[momentum]    SOLD @ ${sellPrice}c | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        const pnlColor = pnl >= 0 ? C.win : C.loss;
+        console.log(`${C.sell}[momentum]    SOLD @ ${sellPrice}c | ${pnlColor}PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${C.reset}`);
         closeTrade(ticker, curPrice, pnl);
         exits++;
       } catch (e) {
@@ -731,7 +744,7 @@ async function scanSportsMomentum(liveTickerSet) {
           count: MOMENTUM_CONTRACTS, yes_price: limitPrice,
         });
         const filled = order?.order?.fill_count ?? 0;
-        console.log(`[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c`);
+        console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${MOMENTUM_CONTRACTS} YES @ ${limitPrice}c${C.reset}`);
         // Always mark game as bought to prevent buying the other side,
         // even if fill_count is 0 (limit orders can fill moments later)
         boughtGames.add(gs);
