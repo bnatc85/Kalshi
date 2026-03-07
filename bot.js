@@ -497,21 +497,55 @@ async function poll() {
     }
   }
 
-  // 5. Summary — from real Kalshi positions + trade ledger
-  const allTrades = loadTrades();
-  const openTrades2 = allTrades.filter(t => t.status === 'open');
-  const closedTrades = allTrades.filter(t => t.status === 'closed');
-  const realizedPnl = closedTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-
-  // Count real Kalshi positions
+  // 5. Detect settled positions — close open trades that are no longer held
   let liveCount = 0;
+  const liveTickersNow = new Set();
   try {
     const live = await getKalshiClient().fetchPositions();
-    liveCount = live.filter(p => p.size !== 0).length;
+    for (const p of live) {
+      if (p.size !== 0) {
+        liveCount++;
+        liveTickersNow.add(p.marketId);
+      }
+    }
   } catch {}
 
+  const allTrades = loadTrades();
+  const openTrades2 = allTrades.filter(t => t.status === 'open');
+  for (const trade of openTrades2) {
+    // If we still hold it or just sold it this cycle, skip
+    if (liveTickersNow.has(trade.ticker) || soldThisCycle.has(trade.ticker)) continue;
+    // Position is gone — likely settled. Check the market result.
+    let pnl = -(trade.entryPrice * (trade.contracts || 1)); // assume total loss
+    try {
+      const mktResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${trade.ticker}`);
+      if (mktResp.ok) {
+        const mktData = await mktResp.json();
+        const mkt = mktData.market || mktData;
+        const result = mkt.result;
+        if (result === 'yes' && trade.side === 'yes') {
+          pnl = (1 - trade.entryPrice) * (trade.contracts || 1);
+        } else if (result === 'no' && trade.side === 'no') {
+          pnl = (1 - trade.entryPrice) * (trade.contracts || 1);
+        }
+        // If result matches our side, we won; otherwise pnl stays as total loss
+        console.log(`[settle] ${trade.ticker} ${trade.side.toUpperCase()} | result=${result || '?'} | PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+      }
+    } catch (e) {
+      console.warn(`[settle] ${trade.ticker}: could not fetch market: ${e.message}`);
+    }
+    closeTrade(trade.ticker, 0, pnl);
+    await sleep(500);
+  }
+
+  // 6. Summary
+  const allTrades2 = loadTrades();
+  const stillOpen = allTrades2.filter(t => t.status === 'open');
+  const closedTrades = allTrades2.filter(t => t.status === 'closed');
+  const realizedPnl = closedTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+
   console.log(
-    `\n[summary] Positions: ${liveCount}  Ledger open: ${openTrades2.length}  Closed: ${closedTrades.length}  ` +
+    `\n[summary] Positions: ${liveCount}  Ledger open: ${stillOpen.length}  Closed: ${closedTrades.length}  ` +
     `Realized PnL: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`
   );
 }
