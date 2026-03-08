@@ -923,14 +923,12 @@ async function scanSportsMomentum(liveTickerSet) {
       const maxPerSession = isTourney ? TOURNEY_MAX_PER_PLAYER : MOMENTUM_MAX_PER_GAME;
       if (gsCount >= maxPerSession) continue;
 
-      // Time-to-close filter (skip for tournaments — they close in days)
-      if (!isTourney) {
+      // Time-to-close filter (skip for tournaments and game markets — their
+      // close_time is often set days/weeks out, not at game end)
+      if (!isTourney && !isGameMarket) {
         const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
         const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
-        if (hoursToClose > 12) {
-          if (isGameMarket && signalType) console.log(`[momentum-dbg] ${ticker} FILTERED: hoursToClose=${hoursToClose.toFixed(1)}`);
-          continue;
-        }
+        if (hoursToClose > 12) continue;
       }
 
       // Live game filter: only trade when the game is actually in progress
