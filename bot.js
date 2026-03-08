@@ -150,7 +150,7 @@ const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
 const MOMENTUM_MIN_BID_DEPTH = 2;      // min bid-side contracts for liquidity
 const MOMENTUM_MIN_VOLUME = 10;        // min contracts traded on ticker before entering
 const MOMENTUM_MAX_PER_GAME = 1;       // max 1 ticker per game (don't buy both sides)
-const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB']; // skip parlays and NCAA basketball
+const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB', 'KXNBAMENTION', 'KXNFLMENTION', 'KXMLBMENTION', 'KXNHLMENTION']; // skip parlays, NCAA, and mention markets
 
 export async function startBot() {
   console.log('\n================================================');
