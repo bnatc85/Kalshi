@@ -72,19 +72,19 @@ const priceHistory = new Map();
 const momentumPositions = new Map();
 
 // Entry signals — in-game sports
-const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
+const MOMENTUM_MIN_MOVE = 0.03;        // 3c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
-const MOMENTUM_MIN_PRICE = 0.40;       // momentum: don't buy below 40c
-const MOMENTUM_MAX_PRICE = 0.70;       // momentum: don't buy above 70c
-const REVERSION_DIP = 0.05;            // mean reversion: 5c dip from avg
+const MOMENTUM_MIN_PRICE = 0.25;       // momentum: don't buy below 25c
+const MOMENTUM_MAX_PRICE = 0.80;       // momentum: don't buy above 80c
+const REVERSION_DIP = 0.03;            // mean reversion: 3c dip from avg
 const REVERSION_AVG_WINDOW_MS = 30 * 60 * 1000; // mean reversion: 30min avg
-const REVERSION_MIN_PRICE = 0.40;      // mean reversion: dip buyers from 40c+
-const REVERSION_MAX_PRICE = 0.85;      // mean reversion: cap at 85c
+const REVERSION_MIN_PRICE = 0.25;      // mean reversion: dip buyers from 25c+
+const REVERSION_MAX_PRICE = 0.90;      // mean reversion: cap at 90c
 
 // Exit thresholds — in-game sports
 const MOMENTUM_STOP_LOSS = 0.10;       // sell if price drops 10c below entry
-const MOMENTUM_TRAILING_STOP = 0.05;   // sell if price drops 5c from peak
-const MOMENTUM_TAKE_PROFIT = 0.15;     // sell if price rises 15c above entry
+const MOMENTUM_TRAILING_STOP = 0.07;   // sell if price drops 7c from peak
+const MOMENTUM_TAKE_PROFIT = 0.20;     // sell if price rises 20c above entry
 
 // Tournament settings (golf, etc.) — DISABLED: momentum doesn't fit multi-day events
 const TOURNEY_SERIES = []; // was: ['KXPGATOUR', 'KXPGAH2H', ...]
@@ -102,10 +102,13 @@ const TOURNEY_REVERSION_MAX = 0.50;    // reversion: max avg price
 const TOURNEY_MAX_PER_PLAYER = 1;      // max 1 market type per player
 
 // Contrarian/Fade strategy — buy No when Yes spikes too high
-const FADE_MIN_SPIKE = 0.05;           // 5c+ spike triggers fade
+const FADE_MIN_SPIKE = 0.03;           // 3c+ spike triggers fade
 const FADE_WINDOW_MS = 5 * 60 * 1000;  // spike within 5 minutes
-const FADE_MIN_YES = 0.65;            // only fade when Yes >= 65c (No <= 35c)
-const FADE_MAX_YES = 0.85;            // don't fade above 85c (too certain)
+const FADE_MIN_YES = 0.60;            // only fade when Yes >= 60c (No <= 40c)
+const FADE_MAX_YES = 0.90;            // don't fade above 90c (too certain)
+
+// Sports game series — fetched explicitly so they aren't crowded out by weather/politics
+const SPORTS_SERIES = ['KXNBAGAME', 'KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNHLGAME', 'KXNFLGAME', 'KXMLSGAME'];
 
 // Settlement sniping — buy near-certain outcomes for guaranteed small profit
 const SNIPE_MIN_BID = 0.95;           // min bid price to consider sniping
@@ -113,7 +116,7 @@ const SNIPE_MAX_CONTRACTS = 10;       // max contracts per snipe
 const SNIPE_SERIES = ['KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNBAGAME'];
 
 // Orderbook imbalance — signal based on bid depth ratio
-const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
+const OB_IMBALANCE_RATIO = 3;         // 3:1 ratio = strong signal
 
 // Entertainment markets (Netflix etc.)
 const ENTERTAINMENT_SERIES = []; // was: ['KXNETFLIXRANKSHOWGLOBAL', ...] — disabled: multi-day markets don't fit momentum
@@ -144,9 +147,9 @@ const MOMENTUM_SIZE_TIERS = [
   [20,   1],   // vol >= 20   → 1 contract
 ];
 const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
-const MOMENTUM_MIN_BID_DEPTH = 3;      // min bid-side contracts for liquidity
-const MOMENTUM_MIN_VOLUME = 20;        // min contracts traded on ticker before entering
-const MOMENTUM_MAX_PER_GAME = 2;       // max tickers per game session
+const MOMENTUM_MIN_BID_DEPTH = 2;      // min bid-side contracts for liquidity
+const MOMENTUM_MIN_VOLUME = 10;        // min contracts traded on ticker before entering
+const MOMENTUM_MAX_PER_GAME = 3;       // max tickers per game session
 const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB']; // skip parlays and NCAA basketball
 
 export async function startBot() {
@@ -629,6 +632,23 @@ async function scanSportsMomentum(liveTickerSet) {
     const data = await resp.json();
     const markets = data.markets || [];
 
+    // Fetch sports game markets by series — the generic 200-market fetch gets
+    // crowded out by weather/politics, so sports games never appear otherwise
+    for (const series of SPORTS_SERIES) {
+      try {
+        const sResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
+        if (sResp.ok) {
+          const sData = await sResp.json();
+          for (const m of (sData.markets || [])) {
+            if (m.ticker && !markets.some(ex => ex.ticker === m.ticker)) {
+              markets.push(m);
+            }
+          }
+        }
+      } catch {}
+      await sleep(500);
+    }
+
     // Also fetch tournament + entertainment markets — no close time filter
     const tourneyTickers = new Set();
     const allSeries = [...TOURNEY_SERIES, ...ENTERTAINMENT_SERIES];
@@ -854,7 +874,7 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!isTourney) {
         const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
         const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
-        if (hoursToClose > 6) continue;
+        if (hoursToClose > 12) continue;
       }
 
       // Live game filter: only trade when the game is actually in progress
@@ -956,10 +976,10 @@ async function scanSportsMomentum(liveTickerSet) {
       if (tradeSide === 'no') {
         const noAsk = 1 - yesPrice; // approximate No ask
         const mid = bestBid ? Math.round(((bestBid + noAsk) / 2) * 100) : Math.round(noAsk * 100);
-        limitPrice = Math.min(mid, 45); // cap No buys at 45c
+        limitPrice = Math.min(mid, 55); // cap No buys at 55c
       } else {
         const mid = bestBid ? Math.round(((bestBid + yesPrice) / 2) * 100) : Math.round(yesPrice * 100);
-        limitPrice = Math.min(mid, 80); // hard cap at 80c
+        limitPrice = Math.min(mid, 90); // hard cap at 90c
       }
       try {
         const orderParams = {
