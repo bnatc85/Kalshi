@@ -888,6 +888,12 @@ async function scanSportsMomentum(liveTickerSet) {
       // Need 4+ data points for momentum/reversion, but WIN-PROB works with just 1
       if (history.length < 4 && !isGameMarket) continue;
 
+      // Fetch score context early — needed for WIN-PROB signal and later filters
+      let scoreCtx = null;
+      if (!isTourney && isGameMarket) {
+        scoreCtx = await getScoreContext(ticker);
+      }
+
       // --- Signal detection ---
       let signalType = null;
       let signalDetail = '';
@@ -976,9 +982,10 @@ async function scanSportsMomentum(liveTickerSet) {
 
       // Live game filter: only trade when the game is actually in progress
       // Prevents buying on pre-game price noise
-      let scoreCtx = null;
-      if (!isTourney) {
+      if (!isTourney && !scoreCtx) {
         scoreCtx = await getScoreContext(ticker);
+      }
+      if (!isTourney) {
         if (scoreCtx && !scoreCtx.isLive) {
           if (signalType || isGameMarket) {
             console.log(`[momentum-dbg] SKIP ${ticker}: game not live (${scoreCtx.status}) — ${signalType || 'no signal'}`);
