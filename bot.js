@@ -648,6 +648,7 @@ async function scanSportsMomentum(liveTickerSet) {
     const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
     const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
     const todayTag = String(nowET.getFullYear()).slice(-2) + MONTHS[nowET.getMonth()] + String(nowET.getDate()).padStart(2, '0');
+    console.log(`[momentum] Today tag: ${todayTag}`);
     for (const series of SPORTS_SERIES) {
       try {
         const sResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
@@ -814,7 +815,8 @@ async function scanSportsMomentum(liveTickerSet) {
       const prefix = m.ticker.match(/^[A-Z]+/)?.[0];
       if (prefix) seenSeries.add(prefix);
     }
-    console.log(`[momentum] Scanning ${markets.length} markets (${inRange} in price range, ${momentumPositions.size} active, ${exits} exited) | series: ${[...seenSeries].join(', ')}`);
+    const gameCount = markets.filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|WBC|NFL)GAME/.test(m.ticker)).length;
+    console.log(`[momentum] Scanning ${markets.length} markets (${inRange} in price range, ${gameCount} game mkts, ${momentumPositions.size} active, ${exits} exited) | series: ${[...seenSeries].join(', ')}`);
 
     let signals = 0;
     const nowMs = Date.now();
