@@ -14,7 +14,7 @@ export const config = {
   minIRR: parseInt(process.env.MIN_IRR || '20'),
   positionSizeUSD: parseInt(process.env.POSITION_SIZE_USD || '100'),
   maxOpenPositions: parseInt(process.env.MAX_OPEN_POSITIONS || '999'),
-  pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '60'),
+  pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '15'),
   exitConvergenceBps: parseInt(process.env.EXIT_CONVERGENCE_BPS || '50'),
   // Min sell price (in cents) for positions with no known entry price (e.g. manual buys).
   // Set to 0 to sell at any bid. Default 1 = sell at any bid >= 1c.

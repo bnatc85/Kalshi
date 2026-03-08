@@ -252,6 +252,28 @@ async function poll() {
       rawMap.set(rp.ticker || rp.market_ticker, rp);
     }
 
+    // Pre-fetch all orderbooks in parallel for positions we need to check
+    const positionsToCheck = livePositions.filter(p => p.size !== 0 && !openSellTickers.has(p.marketId));
+    const autosellOrderbooks = new Map();
+    const OB_BATCH = 10;
+    for (let i = 0; i < positionsToCheck.length; i += OB_BATCH) {
+      const batch = positionsToCheck.slice(i, i + OB_BATCH);
+      const results = await Promise.allSettled(
+        batch.map(p =>
+          fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${p.marketId}/orderbook`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => ({ ticker: p.marketId, ob: data ? (data.orderbook || data) : null }))
+            .catch(() => ({ ticker: p.marketId, ob: null }))
+        )
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.ob) {
+          autosellOrderbooks.set(r.value.ticker, r.value.ob);
+        }
+      }
+      if (i + OB_BATCH < positionsToCheck.length) await sleep(300);
+    }
+
     for (const pos of livePositions) {
       // size is signed: positive = Yes, negative = No, zero = no position
       if (pos.size === 0) continue;
@@ -294,35 +316,18 @@ async function poll() {
 
       if (!outcome) { console.warn(`[auto-sell] ${ticker}: no outcomes found`); continue; }
 
-      // Fetch order book via Kalshi REST API directly (pmxt's fetchOrderBook
-      // fails with DECODER error due to key format issues)
+      // Fetch order book — use pre-fetched data if available, otherwise fetch individually
       let bestBid = null;
-      try {
-        const obUrl = `https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`;
-        const obResp = await fetch(obUrl);
-        if (obResp.ok) {
-          const obData = await obResp.json();
-          const ob = obData.orderbook || obData;
-          // Kalshi orderbook: "yes" and "no" arrays of [price_cents, quantity]
-          // sorted ASCENDING — best bid (highest price) is the LAST element
-          const yesBids = ob.yes || [];
-          const noBids = ob.no || [];
-
-          // Only use direct bids — someone actually willing to buy our side.
-          // Cross-side inference is unreliable (a 1c NO bid ≠ a 99c YES buyer).
-          if (side === 'yes' && yesBids.length) {
-            bestBid = yesBids[yesBids.length - 1][0] / 100;
-          } else if (side === 'no' && noBids.length) {
-            bestBid = noBids[noBids.length - 1][0] / 100;
-          }
-
-        } else {
-          console.warn(`[auto-sell] ${ticker} orderbook HTTP ${obResp.status}`);
+      const obCached = autosellOrderbooks.get(ticker);
+      if (obCached) {
+        const yesBids = obCached.yes || [];
+        const noBids = obCached.no || [];
+        if (side === 'yes' && yesBids.length) {
+          bestBid = yesBids[yesBids.length - 1][0] / 100;
+        } else if (side === 'no' && noBids.length) {
+          bestBid = noBids[noBids.length - 1][0] / 100;
         }
-      } catch (e) {
-        console.warn(`[auto-sell] ${ticker} orderbook error: ${e.message}`);
       }
-      await sleep(1500);
 
       // Look up entry price: manual overrides → trade ledger → API → Kalshi fills
       let entry = null;
@@ -375,7 +380,7 @@ async function poll() {
         } catch (e) {
           console.warn(`[auto-sell] ${ticker}: could not fetch fills: ${e.message}`);
         }
-        await sleep(500);
+        await sleep(200);
       }
 
       let minSellPrice;
@@ -461,7 +466,7 @@ async function poll() {
       } catch (e) {
         console.error(`[auto-sell]   -> sell failed: ${e.message}`);
       }
-      await sleep(1500);
+      await sleep(300);
     }
   } catch (e) {
     console.warn(`[auto-sell] Failed to check positions: ${e.message}`);
@@ -571,7 +576,7 @@ async function poll() {
       console.warn(`[settle] ${trade.ticker}: could not fetch market: ${e.message}`);
     }
     closeTrade(trade.ticker, 0, pnl);
-    await sleep(500);
+    await sleep(200);
   }
 
   // 6. Summary
@@ -620,7 +625,7 @@ async function scanSportsMomentum(liveTickerSet) {
           }
         }
       } catch {}
-      await sleep(500);
+      await sleep(200);
     }
 
     // Also fetch tournament + entertainment markets — no close time filter
@@ -639,7 +644,7 @@ async function scanSportsMomentum(liveTickerSet) {
           }
         }
       } catch {}
-      await sleep(500);
+      await sleep(200);
     }
 
     if (!markets.length) { console.log(`[momentum] No markets found`); return; }
@@ -692,7 +697,7 @@ async function scanSportsMomentum(liveTickerSet) {
           obFetched++;
         }
       }
-      if (i + BATCH_SIZE < gameMarketTickers.length) await sleep(500);
+      if (i + BATCH_SIZE < gameMarketTickers.length) await sleep(200);
     }
     if (obFetched > 0) console.log(`[momentum] Updated ${obFetched}/${gameMarketTickers.length} game market prices from orderbook`);
 
@@ -759,7 +764,7 @@ async function scanSportsMomentum(liveTickerSet) {
         console.error(`[momentum]    Sell failed: ${e.message}`);
       }
       momentumPositions.delete(ticker);
-      await sleep(1500);
+      await sleep(300);
     }
 
     // --- Step 2: Scan for new signals ---
@@ -946,7 +951,7 @@ async function scanSportsMomentum(liveTickerSet) {
           noBidDepth = obNoBids.reduce((s, lvl) => s + lvl[1], 0);
         }
       } catch {}
-      await sleep(500);
+      await sleep(200);
 
       // D) Orderbook imbalance signal — strong directional bias from depth
       if (!signalType && !isTourney && yesBidDepth > 0 && noBidDepth > 0) {
@@ -1049,7 +1054,7 @@ async function scanSportsMomentum(liveTickerSet) {
       } catch (e) {
         console.error(`[momentum]    Order failed: ${e.message}`);
       }
-      await sleep(1500);
+      await sleep(300);
     }
 
     if (signals === 0) {
@@ -1079,7 +1084,7 @@ async function scanSettlementSnipes(liveTickerSet) {
           snipeMarkets.push(...(data.markets || []));
         }
       } catch {}
-      await sleep(500);
+      await sleep(200);
     }
 
     if (!snipeMarkets.length) return;
@@ -1142,7 +1147,7 @@ async function scanSettlementSnipes(liveTickerSet) {
           recordTrade(ticker, snipeSide, snipePrice / 100, snipePrice / 100, filled);
           snipes++;
         }
-        await sleep(1500);
+        await sleep(300);
       } catch (e) {
         console.warn(`[snipe] ${ticker}: ${e.message}`);
       }
@@ -1176,7 +1181,7 @@ async function scanCrossMarketArb(liveTickerSet) {
           }
         }
       } catch {}
-      await sleep(500);
+      await sleep(200);
     }
 
     if (allMarkets.length < 2) return;
@@ -1254,7 +1259,7 @@ async function scanCrossMarketArb(liveTickerSet) {
           } catch (e) {
             console.error(`[arb]    Order failed: ${e.message}`);
           }
-          await sleep(1500);
+          await sleep(300);
         }
       }
     }
