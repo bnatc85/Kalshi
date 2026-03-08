@@ -633,14 +633,18 @@ async function scanSportsMomentum(liveTickerSet) {
     const markets = data.markets || [];
 
     // Fetch sports game markets by series — the generic 200-market fetch gets
-    // crowded out by weather/politics, so sports games never appear otherwise
+    // crowded out by weather/politics, so sports games never appear otherwise.
+    // Only include today's games (ticker contains date like 26MAR08).
+    const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const todayTag = String(nowET.getFullYear()).slice(-2) + MONTHS[nowET.getMonth()] + String(nowET.getDate()).padStart(2, '0');
     for (const series of SPORTS_SERIES) {
       try {
         const sResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
         if (sResp.ok) {
           const sData = await sResp.json();
           for (const m of (sData.markets || [])) {
-            if (m.ticker && !markets.some(ex => ex.ticker === m.ticker)) {
+            if (m.ticker && m.ticker.includes(todayTag) && !markets.some(ex => ex.ticker === m.ticker)) {
               markets.push(m);
             }
           }
