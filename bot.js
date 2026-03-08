@@ -182,41 +182,9 @@ async function poll() {
   const timestamp = new Date().toLocaleTimeString();
   console.log(`\n--- ${timestamp} ---`);
 
-  // 1. Fetch market prices sequentially to avoid Kalshi 429 rate limits
+  // Polymarket divergence scan disabled — focusing on sports momentum
   const snapshots = [];
-  for (const m of config.markets) {
-    snapshots.push(await fetchMarketPrices(m));
-    await sleep(1500);
-  }
-
-  // 2. Compute divergences
   const signals = [];
-  for (let i = 0; i < snapshots.length; i++) {
-    const snap = snapshots[i];
-    const market = config.markets[i];
-
-    if (snap.kalshiPrice === null || snap.polyPrice === null) {
-      console.log(`[scan]    ${market.label}: Missing prices (K=${snap.kalshiPrice} P=${snap.polyPrice})`);
-      continue;
-    }
-
-    const sig = findDivergence(snap.polyPrice, snap.kalshiPrice, snap.kalshiSide, snap.daysToExpiry);
-    sig.marketLabel = market.label;
-    sig.marketIndex = i;
-
-    const meets = sig.divergenceBps >= config.minDivergenceBps && sig.irr >= config.minIRR;
-    const marker = meets ? '>>' : '  ';
-    console.log(
-      `[scan] ${marker} ${market.label.padEnd(28)} ` +
-      `K=${(snap.kalshiPrice * 100).toFixed(1)}c  P=${(snap.polyPrice * 100).toFixed(1)}c  ` +
-      `div=${sig.divergenceBps.toFixed(0)}bps  IRR=${sig.irr.toFixed(0)}%  ` +
-      `-> BUY ${sig.tradeSide.toUpperCase()} @ ${(sig.entryPrice * 100).toFixed(1)}c  ${snap.daysToExpiry}d`
-    );
-
-    if (meets) signals.push({ ...sig, market });
-  }
-
-  signals.sort((a, b) => b.irr - a.irr);
 
   // 3. Check exits for open positions
   for (let i = positions.length - 1; i >= 0; i--) {
