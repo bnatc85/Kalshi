@@ -894,6 +894,10 @@ async function scanSportsMomentum(liveTickerSet) {
       let scoreCtx = null;
       if (!isTourney && isGameMarket) {
         scoreCtx = await getScoreContext(ticker);
+        if (yesPrice >= 0.20 && yesPrice <= 0.85) {
+          const held = liveTickerSet.has(ticker);
+          console.log(`[game-dbg] ${ticker} yes=${(yesPrice*100).toFixed(0)}c score=${scoreCtx ? scoreCtx.display : 'null'} held=${held} hist=${history.length}`);
+        }
       }
 
       // --- Signal detection ---
