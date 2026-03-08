@@ -713,12 +713,14 @@ async function scanSportsMomentum(liveTickerSet) {
       const trailingStop = mp.isTourney ? TOURNEY_TRAILING_STOP : MOMENTUM_TRAILING_STOP;
       const takeProfit = mp.isTourney ? TOURNEY_TAKE_PROFIT : MOMENTUM_TAKE_PROFIT;
 
+      // For game markets: only exit on take-profit (90c+), let the rest ride to settlement
+      const isGameTkr = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
       let exitReason = null;
-      if (curPrice <= mp.entryPrice - stopLoss) {
+      if (!isGameTkr && curPrice <= mp.entryPrice - stopLoss) {
         exitReason = `STOP-LOSS (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
-      } else if (curPrice <= mp.highestSeen - trailingStop) {
+      } else if (!isGameTkr && curPrice <= mp.highestSeen - trailingStop) {
         exitReason = `TRAILING-STOP (${(curPrice*100).toFixed(0)}c, peak ${(mp.highestSeen*100).toFixed(0)}c)`;
-      } else if (curPrice >= mp.entryPrice + takeProfit) {
+      } else if (curPrice >= 0.90) {
         exitReason = `TAKE-PROFIT (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
       }
 
