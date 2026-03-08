@@ -1030,15 +1030,14 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
-      // Place order at mid price (between best bid and ask) instead of ask+2c
+      // Place order at best bid + 1c to get filled quickly without overpaying
       let limitPrice;
       if (tradeSide === 'no') {
-        const noAsk = 1 - yesPrice; // approximate No ask
-        const mid = bestBid ? Math.round(((bestBid + noAsk) / 2) * 100) : Math.round(noAsk * 100);
-        limitPrice = Math.min(mid, 55); // cap No buys at 55c
+        limitPrice = bestBid ? Math.round(bestBid * 100) + 1 : Math.round((1 - yesPrice) * 100);
+        limitPrice = Math.min(limitPrice, 90); // hard cap at 90c
       } else {
-        const mid = bestBid ? Math.round(((bestBid + yesPrice) / 2) * 100) : Math.round(yesPrice * 100);
-        limitPrice = Math.min(mid, 90); // hard cap at 90c
+        limitPrice = bestBid ? Math.round(bestBid * 100) + 1 : Math.round(yesPrice * 100);
+        limitPrice = Math.min(limitPrice, 90); // hard cap at 90c
       }
       try {
         const orderParams = {
