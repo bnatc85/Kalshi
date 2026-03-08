@@ -909,6 +909,7 @@ async function scanSportsMomentum(liveTickerSet) {
         if (wp && wp.winProb != null) {
           const marketPrice = yesPrice; // Kalshi Yes price = implied win prob
           const edge = wp.winProb - marketPrice; // positive = market underpricing this team
+          console.log(`[win-prob] ${ticker} model=${(wp.winProb*100).toFixed(0)}% market=${(marketPrice*100).toFixed(0)}c edge=${(edge*100).toFixed(0)}c src=${wp.source}`);
           if (edge >= WIN_PROB_MIN_EDGE && marketPrice <= 0.45) {
             // Market is underpricing — buy Yes (underdog with edge)
             signalType = 'WIN-PROB';
@@ -969,7 +970,10 @@ async function scanSportsMomentum(liveTickerSet) {
       // --- Filters (before orderbook fetch to save API calls) ---
       // Skip if we already hold this ticker or hit the per-game/player cap
       const gs = gameSession(ticker);
-      if (liveTickerSet.has(ticker) || boughtGames.has(gs)) continue;
+      if (liveTickerSet.has(ticker) || boughtGames.has(gs)) {
+        if (isGameMarket && signalType) console.log(`[momentum-dbg] ${ticker} ${signalType} blocked: already held/bought`);
+        continue;
+      }
       const gsCount = gameSessionCount.get(gs) || 0;
       const maxPerSession = isTourney ? TOURNEY_MAX_PER_PLAYER : MOMENTUM_MAX_PER_GAME;
       if (gsCount >= maxPerSession) continue;
