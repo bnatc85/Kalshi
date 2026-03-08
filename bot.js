@@ -820,6 +820,9 @@ async function scanSportsMomentum(liveTickerSet) {
 
       if (history.length < 2) continue;
 
+      // Debug: log NBA/NHL game markets to see why they don't generate signals
+      const isGameMarket = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
+
       // --- Signal detection ---
       let signalType = null;
       let signalDetail = '';
@@ -862,6 +865,12 @@ async function scanSportsMomentum(liveTickerSet) {
         }
       }
 
+      // Debug: log signal detection results for game markets
+      if (isGameMarket && yesPrice >= pMinPrice && yesPrice <= pMaxPrice) {
+        const move = (priceMove * 100).toFixed(1);
+        console.log(`[momentum-dbg] ${ticker} yes=${(yesPrice*100).toFixed(0)}c move=${move}c/${history.length}pts signal=${signalType || 'none'} vol=${m.volume || 0}`);
+      }
+
       // --- Filters (before orderbook fetch to save API calls) ---
       // Skip if we already hold this ticker or hit the per-game/player cap
       const gs = gameSession(ticker);
@@ -874,7 +883,10 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!isTourney) {
         const closeTime = m.close_time ? new Date(m.close_time).getTime() : 0;
         const hoursToClose = closeTime ? (closeTime - nowMs) / (1000 * 60 * 60) : 999;
-        if (hoursToClose > 12) continue;
+        if (hoursToClose > 12) {
+          if (isGameMarket && signalType) console.log(`[momentum-dbg] ${ticker} FILTERED: hoursToClose=${hoursToClose.toFixed(1)}`);
+          continue;
+        }
       }
 
       // Live game filter: only trade when the game is actually in progress
@@ -882,13 +894,14 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!isTourney) {
         const scoreCtx = await getScoreContext(ticker);
         if (scoreCtx && !scoreCtx.isLive) {
-          if (signalType) {
-            console.log(`[momentum]    SKIP ${ticker}: game not live (${scoreCtx.status}) — ${signalType} signal ignored`);
+          if (signalType || isGameMarket) {
+            console.log(`[momentum-dbg] SKIP ${ticker}: game not live (${scoreCtx.status}) — ${signalType || 'no signal'}`);
           }
           continue;
         }
-        // If scoreCtx is null, we couldn't match teams (non-sports market or unknown teams)
-        // Let those through — they'll be filtered by other checks
+        if (isGameMarket && !scoreCtx) {
+          console.log(`[momentum-dbg] ${ticker}: no ESPN match (null scoreCtx) — letting through`);
+        }
       }
 
       // Skip if no signal yet AND this market wouldn't qualify for OB imbalance
