@@ -130,6 +130,10 @@ const ARB_SERIES = ['KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXMLBS
 const ARB_MIN_DIVERGENCE = 0.15; // 15c+ divergence between correlated markets
 const ARB_MAX_CONTRACTS = 3;     // conservative sizing for arb trades
 
+// Win probability — minimum divergence between model and market price to trade
+const WIN_PROB_MIN_EDGE = 0.10;        // 10c+ edge required (model vs market)
+const WIN_PROB_STRONG_EDGE = 0.20;     // 20c+ = strong signal, allow bigger size
+
 // Live scores — ESPN API for score validation
 const SCORE_API_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const SCORE_SPORTS = [
@@ -878,16 +882,39 @@ async function scanSportsMomentum(liveTickerSet) {
         history.shift();
       }
 
-      if (history.length < 4) continue;
-
       // Debug: log NBA/NHL game markets to see why they don't generate signals
       const isGameMarket = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
+
+      // Need 4+ data points for momentum/reversion, but WIN-PROB works with just 1
+      if (history.length < 4 && !isGameMarket) continue;
 
       // --- Signal detection ---
       let signalType = null;
       let signalDetail = '';
       let tradeSide = 'yes'; // default: buy Yes
       const tag = isTourney ? 'TOURNEY' : 'MOMENTUM';
+
+      // A-0) Win probability model — highest priority signal
+      // Compares ESPN/model win probability to Kalshi market price
+      if (!signalType && isGameMarket && scoreCtx && scoreCtx.isLive) {
+        const wp = await getWinProbForTicker(ticker, scoreCtx);
+        if (wp && wp.winProb != null) {
+          const marketPrice = yesPrice; // Kalshi Yes price = implied win prob
+          const edge = wp.winProb - marketPrice; // positive = market underpricing this team
+          if (edge >= WIN_PROB_MIN_EDGE && marketPrice <= 0.45) {
+            // Market is underpricing — buy Yes (underdog with edge)
+            signalType = 'WIN-PROB';
+            tradeSide = 'yes';
+            signalDetail = `${wp.source}: ${(wp.winProb*100).toFixed(0)}% vs market ${(marketPrice*100).toFixed(0)}c (edge +${(edge*100).toFixed(0)}c)`;
+          } else if (-edge >= WIN_PROB_MIN_EDGE && marketPrice >= 0.55) {
+            // Market is overpricing — buy No (market thinks Yes is too high)
+            signalType = 'WIN-PROB';
+            tradeSide = 'no';
+            const noPrice = 1 - marketPrice;
+            signalDetail = `${wp.source}: ${(wp.winProb*100).toFixed(0)}% vs market ${(marketPrice*100).toFixed(0)}c (edge +${((-edge)*100).toFixed(0)}c on No @ ${(noPrice*100).toFixed(0)}c)`;
+          }
+        }
+      }
 
       // A) Momentum breakout (buy Yes on rising price)
       const momentumStart = nowMs - pWindow;
@@ -1040,13 +1067,14 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!signalType) continue;
 
       // Favor underdogs: skip momentum/reversion entries where our side costs > 40c
+      // WIN-PROB has its own price checks, so skip this filter for it
       const entryPriceForSide = tradeSide === 'no' ? (1 - yesPrice) : yesPrice;
       if ((signalType === 'MOMENTUM' || signalType === 'REVERSION') && entryPriceForSide > 0.40) {
         continue;
       }
 
-      // Late-game bias: skip early-game signals (except strong OB-IMBAL)
-      if (scoreCtx && scoreCtx.isLive && scoreCtx.period === 1 && signalType !== 'OB-IMBAL') {
+      // Late-game bias: skip early-game signals (except OB-IMBAL and WIN-PROB)
+      if (scoreCtx && scoreCtx.isLive && scoreCtx.period === 1 && signalType !== 'OB-IMBAL' && signalType !== 'WIN-PROB') {
         continue;
       }
 
@@ -1065,8 +1093,9 @@ async function scanSportsMomentum(liveTickerSet) {
       const volume = m.volume || 0;
       if (volume < pMinVol) continue;
 
-      // Volume-based position sizing
-      const contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
+      // Volume-based position sizing — WIN-PROB gets double size (higher conviction)
+      let contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
+      if (signalType === 'WIN-PROB') contractCount = Math.min(contractCount * 2, 10);
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
@@ -1091,14 +1120,17 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
-      // Place order at mid-price (between best bid and ask on our side)
-      // Avoids crossing the spread — may not fill immediately but saves 2-4c per trade
+      // Place order — WIN-PROB crosses the spread (10c+ edge absorbs it),
+      // other signals use mid-price to avoid spread cost
       let limitPrice;
+      const crossSpread = signalType === 'WIN-PROB';
       if (tradeSide === 'no') {
         const noBestBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
         const bestYesBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
         const noAsk = bestYesBid != null ? 100 - bestYesBid : null;
-        if (noBestBid != null && noAsk != null) {
+        if (crossSpread) {
+          limitPrice = noAsk || Math.round((1 - yesPrice) * 100);
+        } else if (noBestBid != null && noAsk != null) {
           limitPrice = Math.round((noBestBid + noAsk) / 2);
         } else {
           limitPrice = noAsk || Math.round((1 - yesPrice) * 100);
@@ -1108,7 +1140,9 @@ async function scanSportsMomentum(liveTickerSet) {
         const yesBestBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
         const bestNoBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
         const yesAsk = bestNoBid != null ? 100 - bestNoBid : null;
-        if (yesBestBid != null && yesAsk != null) {
+        if (crossSpread) {
+          limitPrice = yesAsk || Math.round(yesPrice * 100);
+        } else if (yesBestBid != null && yesAsk != null) {
           limitPrice = Math.round((yesBestBid + yesAsk) / 2);
         } else {
           limitPrice = yesAsk || Math.round(yesPrice * 100);
@@ -1381,6 +1415,7 @@ async function fetchLiveScores() {
       for (const event of (data.events || [])) {
         const competition = event.competitions?.[0];
         if (!competition) continue;
+        const eventId = event.id; // ESPN event ID for win probability lookup
         const status = competition.status?.type?.name || 'unknown'; // STATUS_IN_PROGRESS, STATUS_FINAL, etc.
         const period = competition.status?.period || 0;
         const clock = competition.status?.displayClock || '';
@@ -1388,12 +1423,15 @@ async function fetchLiveScores() {
         for (const team of (competition.competitors || [])) {
           const abbr = team.team?.abbreviation;
           if (!abbr) continue;
+          const isHome = team.homeAway === 'home';
           liveScoreCache.set(abbr, {
             score: parseInt(team.score || '0'),
             status,
             period,
             clock,
             sport: sport.key,
+            eventId,
+            isHome,
             fetchTime: now,
           });
         }
@@ -1426,6 +1464,110 @@ function extractTeams(ticker) {
   return [];
 }
 
+// Win probability cache: eventId -> { homeWinProb, awayWinProb, fetchTime }
+const winProbCache = new Map();
+
+/**
+ * Fetch ESPN win probability for NBA/MLB games.
+ * Returns { homeWinProb, awayWinProb } or null if unavailable.
+ */
+async function fetchWinProbability(eventId, sport) {
+  if (!eventId || !sport) return null;
+
+  // Only NBA and MLB have ESPN win probability
+  const sportPath = sport.includes('basketball') ? 'basketball/nba'
+    : sport.includes('baseball') ? 'baseball/mlb'
+    : null;
+  if (!sportPath) return null;
+
+  // Cache for 30s
+  const cached = winProbCache.get(eventId);
+  if (cached && Date.now() - cached.fetchTime < 30000) return cached;
+
+  try {
+    // Fetch with high limit to get all snapshots, take the last one
+    const url = `https://sports.core.api.espn.com/v2/sports/${sportPath}/events/${eventId}/competitions/${eventId}/probabilities?limit=500`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+
+    // Get the latest probability snapshot (last item = most recent play)
+    const items = data.items || [];
+    const latest = items[items.length - 1];
+    if (!latest) return null;
+
+    const result = {
+      homeWinProb: latest.homeWinPercentage ?? null,
+      awayWinProb: latest.awayWinPercentage ?? null,
+      tieProb: latest.tiePercentage ?? 0,
+      fetchTime: Date.now(),
+    };
+    winProbCache.set(eventId, result);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Estimate NHL win probability from score, period, and time remaining.
+ * Simple logistic model based on goal differential and game progress.
+ */
+function estimateNHLWinProb(score1, score2, period, clock) {
+  const goalDiff = score1 - score2; // positive = team1 leading
+  // Parse minutes remaining in current period
+  const [min, sec] = (clock || '20:00').split(':').map(Number);
+  const periodMinLeft = (min || 0) + (sec || 0) / 60;
+  // Total minutes remaining (20 min periods, 3 periods)
+  const periodsLeft = Math.max(0, 3 - period);
+  const totalMinLeft = periodsLeft * 20 + periodMinLeft;
+  const gameProgress = 1 - totalMinLeft / 60; // 0 = start, 1 = end
+
+  // Logistic function: as game progresses, goal diff matters more
+  // At start: even diff = ~50/50. At end: any lead ≈ certain win.
+  const k = 1.5 + gameProgress * 3; // steepness increases as game progresses
+  const prob = 1 / (1 + Math.exp(-k * goalDiff));
+  return Math.max(0.02, Math.min(0.98, prob)); // clamp to 2%-98%
+}
+
+/**
+ * Get win probability for a specific team in a game.
+ * Returns { winProb, source } or null.
+ * winProb is for the team identified by teamIndex in the ticker.
+ */
+async function getWinProbForTicker(ticker, scoreCtx) {
+  if (!scoreCtx || !scoreCtx.isLive) return null;
+
+  // Extract which team this ticker is for (last segment after dash)
+  const parts = ticker.split('-');
+  const tickerTeam = parts[parts.length - 1];
+  const teamIdx = scoreCtx.teams.indexOf(tickerTeam);
+  if (teamIdx === -1) return null;
+
+  const sport = scoreCtx.sport;
+
+  // NHL: use our own model (ESPN doesn't have win prob for NHL)
+  if (sport && sport.includes('hockey')) {
+    const s1 = scoreCtx.scores[0] ?? 0;
+    const s2 = scoreCtx.scores[1] ?? 0;
+    const prob = estimateNHLWinProb(s1, s2, scoreCtx.period, scoreCtx.clock);
+    // prob is for team1 (index 0). If our team is index 1, invert.
+    const teamProb = teamIdx === 0 ? prob : 1 - prob;
+    return { winProb: teamProb, source: 'nhl-model' };
+  }
+
+  // NBA/MLB: use ESPN win probability
+  if (!scoreCtx.eventId) return null;
+  const wp = await fetchWinProbability(scoreCtx.eventId, sport);
+  if (!wp || wp.homeWinProb == null) return null;
+
+  // Match team to home/away
+  const isHome = scoreCtx.isHome[teamIdx];
+  if (isHome == null) return null;
+  const teamProb = isHome ? wp.homeWinProb : wp.awayWinProb;
+  return { winProb: teamProb, source: 'espn' };
+}
+
 /**
  * Check live scores to validate or boost momentum signals.
  * Returns an object with score context for logging.
@@ -1452,6 +1594,9 @@ async function getScoreContext(ticker) {
     status,
     period,
     clock,
+    sport: team1?.sport || team2?.sport || null,
+    eventId: team1?.eventId || team2?.eventId || null,
+    isHome: [team1?.isHome ?? null, team2?.isHome ?? null],
     display: `${teams[0]} ${score1} - ${teams[1]} ${score2} (${status === 'STATUS_IN_PROGRESS' ? `P${period} ${clock}` : status})`,
     isLive: status === 'STATUS_IN_PROGRESS',
     isFinal: status === 'STATUS_FINAL',
