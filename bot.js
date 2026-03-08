@@ -815,15 +815,19 @@ async function scanSportsMomentum(liveTickerSet) {
     // For tournaments: extract player abbreviation (e.g., TFLE from KXPGATOP20-ARPIPBM26-TFLE)
     // so multiple market types for the same player get grouped.
     const gameSession = (t) => {
-      // Sports game tickers: 26MAR061900NICDOM
+      // Game market tickers: KXMLSGAME-26MAR08CINTOR-TOR, KXNBAGAME-26MAR081930BOSCLE-BOS
+      // Group by everything except the last segment (team/outcome suffix)
+      if (/^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(t)) {
+        const lastDash = t.lastIndexOf('-');
+        return lastDash > 0 ? t.substring(0, lastDash) : t;
+      }
+      // Sports game tickers (non-game-market): 26MAR061900NICDOM
       const sports = t.match(/(\d{2}[A-Z]{3}\d{4,6}[A-Z]{2,})/);
       if (sports) return sports[1];
       // Tournament tickers: last segment after dash is the player (e.g., -TFLE)
-      // Also handle H2H: KXPGAH2H-ARPIPBM26TFLEMFIT-TFLE → player is TFLE
       const parts = t.split('-');
       if (parts.length >= 3) {
         const player = parts[parts.length - 1];
-        // Extract event ID (e.g., ARPIPBM26) from the middle part
         const event = parts[1]?.match(/^[A-Z]+\d+/)?.[0] || parts[1];
         return `${event}-${player}`;
       }
