@@ -686,34 +686,39 @@ async function scanSportsMomentum(liveTickerSet) {
         const p = currentPrices.get(m.ticker) || 0;
         return p >= 0.20 && p <= 0.85;
       });
-    // Batch in groups to avoid rate limits — only fetch for markets in tradeable range
+    // Fetch orderbooks in parallel batches of 10 to stay fast without hammering API
     let obFetched = 0;
-    for (const m of gameMarketTickers) {
-      try {
-        const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${m.ticker}/orderbook`);
-        if (obResp.ok) {
-          const obData = await obResp.json();
-          const ob = obData.orderbook || obData;
-          const yesBids = ob.yes || [];
-          const noAsks = ob.no || [];
-          // Best yes bid = last element (sorted ascending), best yes ask derived from best no bid
-          const bestYesBid = yesBids.length ? yesBids[yesBids.length - 1][0] / 100 : null;
-          const bestNoBid = noAsks.length ? noAsks[noAsks.length - 1][0] / 100 : null;
-          const bestYesAsk = bestNoBid != null ? 1 - bestNoBid : null;
-          // Use mid-price if both sides available, otherwise best bid or original
-          let mid = null;
-          if (bestYesBid != null && bestYesAsk != null) {
-            mid = (bestYesBid + bestYesAsk) / 2;
-          } else if (bestYesBid != null) {
-            mid = bestYesBid;
-          }
-          if (mid != null && mid > 0) {
-            currentPrices.set(m.ticker, mid);
-            obFetched++;
-          }
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < gameMarketTickers.length; i += BATCH_SIZE) {
+      const batch = gameMarketTickers.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map(m =>
+          fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${m.ticker}/orderbook`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => ({ ticker: m.ticker, data }))
+            .catch(() => ({ ticker: m.ticker, data: null }))
+        )
+      );
+      for (const r of results) {
+        if (r.status !== 'fulfilled' || !r.value.data) continue;
+        const ob = r.value.data.orderbook || r.value.data;
+        const yesBids = ob.yes || [];
+        const noAsks = ob.no || [];
+        const bestYesBid = yesBids.length ? yesBids[yesBids.length - 1][0] / 100 : null;
+        const bestNoBid = noAsks.length ? noAsks[noAsks.length - 1][0] / 100 : null;
+        const bestYesAsk = bestNoBid != null ? 1 - bestNoBid : null;
+        let mid = null;
+        if (bestYesBid != null && bestYesAsk != null) {
+          mid = (bestYesBid + bestYesAsk) / 2;
+        } else if (bestYesBid != null) {
+          mid = bestYesBid;
         }
-      } catch {}
-      await sleep(300);
+        if (mid != null && mid > 0) {
+          currentPrices.set(r.value.ticker, mid);
+          obFetched++;
+        }
+      }
+      if (i + BATCH_SIZE < gameMarketTickers.length) await sleep(500);
     }
     if (obFetched > 0) console.log(`[momentum] Updated ${obFetched}/${gameMarketTickers.length} game market prices from orderbook`);
 
