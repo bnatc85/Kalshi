@@ -678,6 +678,45 @@ async function scanSportsMomentum(liveTickerSet) {
       if (p > 0) currentPrices.set(m.ticker, p);
     }
 
+    // For live game markets, fetch orderbook to get real-time mid-prices
+    // The bulk /markets endpoint returns stale yes_ask/last_price
+    const gameMarketTickers = markets
+      .filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(m.ticker))
+      .filter(m => {
+        const p = currentPrices.get(m.ticker) || 0;
+        return p >= 0.20 && p <= 0.85;
+      });
+    // Batch in groups to avoid rate limits — only fetch for markets in tradeable range
+    let obFetched = 0;
+    for (const m of gameMarketTickers) {
+      try {
+        const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${m.ticker}/orderbook`);
+        if (obResp.ok) {
+          const obData = await obResp.json();
+          const ob = obData.orderbook || obData;
+          const yesBids = ob.yes || [];
+          const noAsks = ob.no || [];
+          // Best yes bid = last element (sorted ascending), best yes ask derived from best no bid
+          const bestYesBid = yesBids.length ? yesBids[yesBids.length - 1][0] / 100 : null;
+          const bestNoBid = noAsks.length ? noAsks[noAsks.length - 1][0] / 100 : null;
+          const bestYesAsk = bestNoBid != null ? 1 - bestNoBid : null;
+          // Use mid-price if both sides available, otherwise best bid or original
+          let mid = null;
+          if (bestYesBid != null && bestYesAsk != null) {
+            mid = (bestYesBid + bestYesAsk) / 2;
+          } else if (bestYesBid != null) {
+            mid = bestYesBid;
+          }
+          if (mid != null && mid > 0) {
+            currentPrices.set(m.ticker, mid);
+            obFetched++;
+          }
+        }
+      } catch {}
+      await sleep(300);
+    }
+    if (obFetched > 0) console.log(`[momentum] Updated ${obFetched}/${gameMarketTickers.length} game market prices from orderbook`);
+
     // --- Step 1: Check exits for active momentum positions ---
     let exits = 0;
     for (const [ticker, mp] of momentumPositions) {
