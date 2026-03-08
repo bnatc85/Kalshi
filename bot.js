@@ -436,12 +436,14 @@ async function poll() {
       if (bestBid == null) continue;
 
       // Decide whether to sell
+      // Skip stop-loss for game markets — let them ride to settlement
+      const isGameTicker = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
       let sellReason = null;
       if (bestBid >= 0.95) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
       } else if (bestBid >= minSellPrice) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
-      } else if (entry != null && entry - bestBid >= AUTOSELL_STOP_LOSS) {
+      } else if (!isGameTicker && entry != null && entry - bestBid >= AUTOSELL_STOP_LOSS) {
         sellReason = `${C.loss}STOP-LOSS: down ${((entry - bestBid)*100).toFixed(0)}c (entry ${(entry*100).toFixed(0)}c, bid ${(bestBid*100).toFixed(0)}c)${C.sell}`;
       }
       if (!sellReason) continue;
