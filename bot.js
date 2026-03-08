@@ -72,7 +72,7 @@ const priceHistory = new Map();
 const momentumPositions = new Map();
 
 // Entry signals — in-game sports
-const MOMENTUM_MIN_MOVE = 0.03;        // 3c momentum move required
+const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
 const MOMENTUM_MIN_PRICE = 0.25;       // momentum: don't buy below 25c
 const MOMENTUM_MAX_PRICE = 0.80;       // momentum: don't buy above 80c
@@ -116,7 +116,11 @@ const SNIPE_MAX_CONTRACTS = 10;       // max contracts per snipe
 const SNIPE_SERIES = ['KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNBAGAME'];
 
 // Orderbook imbalance — signal based on bid depth ratio
-const OB_IMBALANCE_RATIO = 3;         // 3:1 ratio = strong signal
+const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
+
+// Volume spike detection — sudden volume increase signals informed trading
+const VOLUME_SPIKE_RATIO = 3;          // 3x recent volume delta = spike
+const VOLUME_SPIKE_MIN_VOLUME = 50;    // min absolute volume delta for spike
 
 // Entertainment markets (Netflix etc.)
 const ENTERTAINMENT_SERIES = []; // was: ['KXNETFLIXRANKSHOWGLOBAL', ...] — disabled: multi-day markets don't fit momentum
@@ -227,6 +231,33 @@ async function poll() {
     }
   } catch (e) {
     console.warn(`[orders] Could not fetch open orders: ${e.message}`);
+  }
+
+  // Cancel stale unfilled buy orders from previous cycles
+  try {
+    const rawOrders = await getKalshiClient().callApi('GetOrders', { status: 'resting' });
+    const orders = rawOrders?.orders || [];
+    const cycleMs = config.pollIntervalSeconds * 2 * 1000; // cancel if older than 2 cycles
+    let cancelled = 0;
+    for (const o of orders) {
+      if (o.action === 'buy') {
+        const createdAt = new Date(o.created_time).getTime();
+        const age = Date.now() - createdAt;
+        if (age > cycleMs) {
+          try {
+            await getKalshiClient().callApi('CancelOrder', { order_id: o.order_id });
+            openOrderTickers.delete(o.ticker);
+            cancelled++;
+          } catch (e) {
+            console.warn(`[stale-order] Cancel failed ${o.order_id}: ${e.message}`);
+          }
+          await sleep(200);
+        }
+      }
+    }
+    if (cancelled > 0) console.log(`[stale-order] Cancelled ${cancelled} unfilled buy orders`);
+  } catch (e) {
+    console.warn(`[stale-order] Could not process stale orders: ${e.message}`);
   }
 
   // Track tickers sold this cycle — prevent re-buying in step 4
@@ -842,12 +873,12 @@ async function scanSportsMomentum(liveTickerSet) {
       const historyWindow = isTourney ? TOURNEY_WINDOW_MS * 2 : REVERSION_AVG_WINDOW_MS * 2;
       if (!priceHistory.has(ticker)) priceHistory.set(ticker, []);
       const history = priceHistory.get(ticker);
-      history.push({ price: yesPrice, time: nowMs });
+      history.push({ price: yesPrice, time: nowMs, volume: m.volume || 0 });
       while (history.length > 0 && history[0].time < nowMs - historyWindow) {
         history.shift();
       }
 
-      if (history.length < 2) continue;
+      if (history.length < 4) continue;
 
       // Debug: log NBA/NHL game markets to see why they don't generate signals
       const isGameMarket = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
@@ -918,8 +949,9 @@ async function scanSportsMomentum(liveTickerSet) {
 
       // Live game filter: only trade when the game is actually in progress
       // Prevents buying on pre-game price noise
+      let scoreCtx = null;
       if (!isTourney) {
-        const scoreCtx = await getScoreContext(ticker);
+        scoreCtx = await getScoreContext(ticker);
         if (scoreCtx && !scoreCtx.isLive) {
           if (signalType || isGameMarket) {
             console.log(`[momentum-dbg] SKIP ${ticker}: game not live (${scoreCtx.status}) — ${signalType || 'no signal'}`);
@@ -928,6 +960,17 @@ async function scanSportsMomentum(liveTickerSet) {
         }
         if (isGameMarket && !scoreCtx) {
           console.log(`[momentum-dbg] ${ticker}: no ESPN match (null scoreCtx) — letting through`);
+        }
+
+        // Score-aware: skip blowouts (game is decided, bad risk/reward)
+        if (scoreCtx && scoreCtx.isLive && scoreCtx.scores && scoreCtx.scores.length >= 2) {
+          const scoreDiff = Math.abs(scoreCtx.scores[0] - scoreCtx.scores[1]);
+          const sport = ticker.match(/^KX(NBA|NHL|MLB|MLS|WBC|NFL)/)?.[1];
+          const blowoutThreshold = sport === 'NBA' ? 25 : sport === 'NFL' ? 21 : sport === 'NHL' ? 4 : 5;
+          if (scoreDiff >= blowoutThreshold) {
+            if (signalType) console.log(`[momentum-dbg] SKIP ${ticker}: blowout (${scoreCtx.display}, diff=${scoreDiff})`);
+            continue;
+          }
         }
       }
 
@@ -957,18 +1000,55 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!signalType && !isTourney && yesBidDepth > 0 && noBidDepth > 0) {
         const yesNoRatio = yesBidDepth / noBidDepth;
         const noYesRatio = noBidDepth / yesBidDepth;
-        if (yesNoRatio >= OB_IMBALANCE_RATIO && yesPrice >= pMinPrice && yesPrice <= pMaxPrice) {
+        if (yesNoRatio >= OB_IMBALANCE_RATIO && yesPrice >= pMinPrice && yesPrice <= 0.45) {
           signalType = 'OB-IMBAL';
           tradeSide = 'yes';
           signalDetail = `Yes depth ${yesBidDepth} vs No ${noBidDepth} (${yesNoRatio.toFixed(1)}:1)`;
-        } else if (noYesRatio >= OB_IMBALANCE_RATIO && yesPrice >= 0.20 && yesPrice <= 0.45) {
+        } else if (noYesRatio >= OB_IMBALANCE_RATIO && yesPrice >= 0.55 && yesPrice <= 0.80) {
+          // No entry price = 1 - yesPrice, so yesPrice 0.55-0.80 = No at 20-45c (underdog)
           signalType = 'OB-IMBAL';
           tradeSide = 'no';
           signalDetail = `No depth ${noBidDepth} vs Yes ${yesBidDepth} (${noYesRatio.toFixed(1)}:1)`;
         }
       }
 
+      // E) Volume spike detection — sudden volume increase signals informed trading
+      if (!signalType && !isTourney && history.length >= 4) {
+        const curVol = m.volume || 0;
+        const prevVol = history[history.length - 2]?.volume || 0;
+        const recentDelta = curVol - prevVol;
+        const olderDeltas = [];
+        for (let k = 1; k < history.length - 1; k++) {
+          olderDeltas.push((history[k].volume || 0) - (history[k-1].volume || 0));
+        }
+        const avgDelta = olderDeltas.length > 0 ? olderDeltas.reduce((s,d) => s+d, 0) / olderDeltas.length : 0;
+        if (avgDelta > 0 && recentDelta >= avgDelta * VOLUME_SPIKE_RATIO && recentDelta >= VOLUME_SPIKE_MIN_VOLUME) {
+          const recentPrice = history[history.length - 1].price;
+          const olderPrice = history[Math.max(0, history.length - 4)].price;
+          if (recentPrice > olderPrice && yesPrice >= pMinPrice && yesPrice <= 0.45) {
+            signalType = 'VOL-SPIKE';
+            tradeSide = 'yes';
+            signalDetail = `vol delta ${recentDelta} vs avg ${avgDelta.toFixed(0)} (${(recentDelta/avgDelta).toFixed(1)}x), price rising`;
+          } else if (recentPrice < olderPrice && (1 - yesPrice) >= 0.20 && (1 - yesPrice) <= 0.45) {
+            signalType = 'VOL-SPIKE';
+            tradeSide = 'no';
+            signalDetail = `vol delta ${recentDelta} vs avg ${avgDelta.toFixed(0)} (${(recentDelta/avgDelta).toFixed(1)}x), price falling`;
+          }
+        }
+      }
+
       if (!signalType) continue;
+
+      // Favor underdogs: skip momentum/reversion entries where our side costs > 40c
+      const entryPriceForSide = tradeSide === 'no' ? (1 - yesPrice) : yesPrice;
+      if ((signalType === 'MOMENTUM' || signalType === 'REVERSION') && entryPriceForSide > 0.40) {
+        continue;
+      }
+
+      // Late-game bias: skip early-game signals (except strong OB-IMBAL)
+      if (scoreCtx && scoreCtx.isLive && scoreCtx.period === 1 && signalType !== 'OB-IMBAL') {
+        continue;
+      }
 
       // Set bestBid and bidDepth for the chosen trade side
       if (tradeSide === 'no') {
@@ -1011,17 +1091,29 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
-      // Place order at the ask to fill immediately.
-      // To buy Yes, the ask = 100 - best No bid. To buy No, the ask = 100 - best Yes bid.
+      // Place order at mid-price (between best bid and ask on our side)
+      // Avoids crossing the spread — may not fill immediately but saves 2-4c per trade
       let limitPrice;
       if (tradeSide === 'no') {
+        const noBestBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
         const bestYesBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
-        const noAsk = bestYesBid != null ? 100 - bestYesBid : Math.round((1 - yesPrice) * 100);
-        limitPrice = Math.min(noAsk, 90);
+        const noAsk = bestYesBid != null ? 100 - bestYesBid : null;
+        if (noBestBid != null && noAsk != null) {
+          limitPrice = Math.round((noBestBid + noAsk) / 2);
+        } else {
+          limitPrice = noAsk || Math.round((1 - yesPrice) * 100);
+        }
+        limitPrice = Math.min(limitPrice, 45); // underdog cap
       } else {
+        const yesBestBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
         const bestNoBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
-        const yesAsk = bestNoBid != null ? 100 - bestNoBid : Math.round(yesPrice * 100);
-        limitPrice = Math.min(yesAsk, 90);
+        const yesAsk = bestNoBid != null ? 100 - bestNoBid : null;
+        if (yesBestBid != null && yesAsk != null) {
+          limitPrice = Math.round((yesBestBid + yesAsk) / 2);
+        } else {
+          limitPrice = yesAsk || Math.round(yesPrice * 100);
+        }
+        limitPrice = Math.min(limitPrice, 45); // underdog cap
       }
       try {
         const orderParams = {
