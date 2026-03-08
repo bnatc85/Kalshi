@@ -1458,21 +1458,35 @@ async function fetchLiveScores() {
 
 /**
  * Extract team abbreviations from a Kalshi ticker.
- * E.g., KXWBCGAME-26MAR061900NICDOM -> ['NIC', 'DOM'] (last 3+3 chars of team portion)
- * or KXMLBSTGAME-26APR071800NYYBAL -> ['NYY', 'BAL']
+ * Handles two formats:
+ *   KXWBCGAME-26MAR061900NICDOM -> ['NIC', 'DOM'] (no team suffix)
+ *   KXNHLGAME-26MAR08EDMVGK-VGK -> ['EDM', 'VGK'] (team suffix after last dash)
+ *   KXNBAGAME-26MAR081930BOSCLE-BOS -> ['BOS', 'CLE']
  */
 function extractTeams(ticker) {
+  // Try format with team suffix: strip the last -TEAM segment and extract from middle
+  const parts = ticker.split('-');
+  if (parts.length >= 3) {
+    // Middle segment contains date+teams: e.g., 26MAR08EDMVGK or 26MAR081930BOSCLE
+    const mid = parts.slice(1, -1).join('-'); // everything between first and last dash
+    const m = mid.match(/\d{2,6}([A-Z]{4,})$/);
+    if (m) {
+      const teams = m[1];
+      if (teams.length >= 6) return [teams.substring(0, 3), teams.substring(3, 6)];
+      if (teams.length >= 4) {
+        const half = Math.floor(teams.length / 2);
+        return [teams.substring(0, half), teams.substring(half)];
+      }
+    }
+  }
+  // Fallback: original format (no team suffix)
   const m = ticker.match(/\d{4,6}([A-Z]+)$/);
   if (!m) return [];
   const teams = m[1];
-  // Teams are concatenated: 3-char abbreviations
-  if (teams.length >= 6) {
-    return [teams.substring(0, 3), teams.substring(3, 6)];
-  }
+  if (teams.length >= 6) return [teams.substring(0, 3), teams.substring(3, 6)];
   if (teams.length >= 4) {
-    // Some tickers have 2+2 or 2+3 char teams
-    const mid = Math.floor(teams.length / 2);
-    return [teams.substring(0, mid), teams.substring(mid)];
+    const half = Math.floor(teams.length / 2);
+    return [teams.substring(0, half), teams.substring(half)];
   }
   return [];
 }
