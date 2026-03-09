@@ -73,13 +73,37 @@ export async function getQuote(symbol) {
 }
 
 /**
+ * Flatten the nested chain into a list of expirations with strikes
+ * Tastytrade returns: chain[0].expirations[].strikes[]
+ */
+export function flattenChain(chain) {
+  const expirations = [];
+  for (const root of chain) {
+    const rootSymbol = root['root-symbol'] || root['underlying-symbol'];
+    for (const exp of (root.expirations || [])) {
+      expirations.push({
+        ...exp,
+        rootSymbol,
+        'expiration-date': exp['expiration-date'],
+        strikes: (exp.strikes || []).map(s => ({
+          ...s,
+          strikePrice: parseFloat(s['strike-price'] || s.strike || 0),
+        })),
+      });
+    }
+  }
+  return expirations;
+}
+
+/**
  * Get 0DTE expirations — returns today's expiration if available
  */
 export function find0DTEExpiration(chain) {
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
 
-  for (const exp of chain) {
+  const expirations = flattenChain(chain);
+  for (const exp of expirations) {
     if (exp['expiration-date'] === todayStr) {
       return exp;
     }

@@ -12,6 +12,7 @@ import {
   getPositions,
   getOptionChain,
   find0DTEExpiration,
+  flattenChain,
   getOrders,
 } from './tastytrade.js';
 
@@ -67,34 +68,28 @@ async function test() {
   console.log(chalk.cyan('\n  5. Fetching SPY option chain...'));
   try {
     const chain = await getOptionChain('SPY');
-    console.log(chalk.green(`     ✓ ${chain.length} expirations loaded`));
+    const expirations = flattenChain(chain);
+    console.log(chalk.green(`     ✓ ${expirations.length} expirations loaded`));
 
-    // Show first few expirations
-    for (const exp of chain.slice(0, 5)) {
-      const date = exp['expiration-date'] || 'unknown';
-      const strikeCount = (exp['strike-prices'] || exp.strikes || exp.expirations || []).length;
-      console.log(chalk.gray(`       ${date} │ ${strikeCount} strikes`));
-    }
-
-    // Dump raw structure of first expiration for debugging
-    if (chain.length > 0) {
-      const sample = chain[0];
-      console.log(chalk.gray(`       Raw keys: ${Object.keys(sample).join(', ')}`));
-      // Show nested structure if present
-      for (const key of Object.keys(sample)) {
-        const val = sample[key];
-        if (Array.isArray(val)) {
-          console.log(chalk.gray(`       ${key}: Array[${val.length}]${val.length ? ' → keys: ' + Object.keys(val[0] || {}).join(', ') : ''}`));
-        }
-      }
+    // Show first few expirations with strike counts
+    for (const exp of expirations.slice(0, 8)) {
+      const date = exp['expiration-date'];
+      const strikeCount = exp.strikes.length;
+      const sampleStrikes = exp.strikes.slice(0, 3).map(s => s.strikePrice);
+      console.log(chalk.gray(`       ${date} │ ${strikeCount} strikes │ e.g. ${sampleStrikes.join(', ')}`));
     }
 
     // Check for 0DTE
     const exp0DTE = find0DTEExpiration(chain);
     if (exp0DTE) {
-      console.log(chalk.green(`     ✓ 0DTE expiration found: ${exp0DTE['expiration-date']}`));
+      console.log(chalk.green(`     ✓ 0DTE expiration found: ${exp0DTE['expiration-date']} │ ${exp0DTE.strikes.length} strikes`));
     } else {
-      console.log(chalk.yellow('     ⚠ No 0DTE expiration today (may be weekend/holiday)'));
+      // Show nearest expiration
+      if (expirations.length) {
+        console.log(chalk.yellow(`     ⚠ No 0DTE today (weekend/holiday) │ Next: ${expirations[0]['expiration-date']}`));
+      } else {
+        console.log(chalk.yellow('     ⚠ No expirations found'));
+      }
     }
   } catch (err) {
     console.log(chalk.red(`     ✗ Chain fetch failed: ${err.message}`));

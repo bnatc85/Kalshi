@@ -256,16 +256,18 @@ function findNearest(arr, target) {
   );
 }
 
-function extractStrikes(chain) {
-  if (!chain) return [];
-  // Handle nested chain format from Tastytrade
-  if (Array.isArray(chain)) {
-    return chain.map(s =>
+function extractStrikes(expiration) {
+  if (!expiration) return [];
+  // Handle flattened expiration with strikes array from flattenChain()
+  if (expiration.strikes && Array.isArray(expiration.strikes)) {
+    return expiration.strikes.map(s => s.strikePrice || parseFloat(s['strike-price'] || s.strike || s)
+    ).filter(s => !isNaN(s));
+  }
+  if (Array.isArray(expiration)) {
+    return expiration.map(s =>
       typeof s === 'number' ? s : parseFloat(s['strike-price'] || s.strike || s)
     ).filter(s => !isNaN(s));
   }
-  if (chain.strikes) return extractStrikes(chain.strikes);
-  if (chain['strike-prices']) return extractStrikes(chain['strike-prices']);
   return [];
 }
 

@@ -19,6 +19,7 @@ import {
   getPositions,
   getOptionChain,
   find0DTEExpiration,
+  flattenChain,
   placeCreditSpread,
   closeCreditSpread,
   getOrders,
