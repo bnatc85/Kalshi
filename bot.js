@@ -510,9 +510,18 @@ async function poll() {
 
       // Decide whether to sell
       // Skip stop-loss for game markets — let them ride to settlement
-      const isGameTicker = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker);
+      const isGameTicker = /^KX(NBA|NHL|MLB|MLS|NFL|WBC)/.test(ticker);
+
+      // Settlement snipes (entry >= 93c) should HOLD to settlement, not auto-sell
+      const isSettlementSnipe = entry != null && entry >= 0.93;
+      if (isSettlementSnipe) {
+        console.log(`[auto-sell] ${ticker} HOLD (settlement snipe @ ${(entry*100).toFixed(0)}c — waiting for 100c settlement)`);
+        continue;
+      }
+
       let sellReason = null;
-      if (bestBid >= 0.95) {
+      if (bestBid >= 0.95 && (entry == null || bestBid > entry)) {
+        // Only sell near-certain if we'd actually profit (don't sell snipes at entry price)
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
       } else if (bestBid >= minSellPrice) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
