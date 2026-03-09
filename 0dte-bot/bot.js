@@ -122,6 +122,8 @@ async function pollCycle() {
     console.log(chalk.cyan(`  [balance] Cash: $${cashBalance.toFixed(2)}`));
 
     // Get spot price — try multiple sources
+    const exps = flattenChain(chain);
+    console.log(chalk.gray(`  [debug] Chain roots: ${chain.length}, Expirations: ${exps.length}, Strikes in first: ${exps[0]?.strikes?.length || 0}`));
     spotPrice = await fetchSpotPrice(chain, balance);
     if (spotPrice) {
       console.log(chalk.cyan(`  [data] SPY: $${spotPrice.toFixed(2)}`));
