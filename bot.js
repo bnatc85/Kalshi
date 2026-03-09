@@ -134,6 +134,57 @@ const ARB_MAX_CONTRACTS = 3;     // conservative sizing for arb trades
 const WIN_PROB_MIN_EDGE = 0.10;        // 10c+ edge required (model vs market)
 const WIN_PROB_STRONG_EDGE = 0.20;     // 20c+ = strong signal, allow bigger size
 
+// Sportsbook odds — compare Kalshi prices to DraftKings/FanDuel lines
+const ODDS_API_KEY = process.env.ODDS_API_KEY || '';
+const ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports';
+const ODDS_CACHE_MS = 3 * 60 * 1000;  // cache odds for 3 minutes (save API calls)
+const ODDS_MIN_EDGE = 0.08;           // 8c+ edge vs sportsbook implied prob
+const ODDS_SPORT_MAP = {
+  KXNBA: 'basketball_nba',
+  KXNHL: 'icehockey_nhl',
+  KXMLB: 'baseball_mlb',
+  KXNFL: 'americanfootball_nfl',
+  KXMLS: 'soccer_usa_mls',
+};
+// Map 3-letter Kalshi/ESPN codes to The Odds API team names (partial match on city/name)
+const TEAM_ABBR_MAP = {
+  // NBA
+  ATL: 'Atlanta Hawks', BOS: 'Boston Celtics', BKN: 'Brooklyn Nets', CHA: 'Charlotte Hornets',
+  CHI: 'Chicago Bulls', CLE: 'Cleveland Cavaliers', DAL: 'Dallas Mavericks', DEN: 'Denver Nuggets',
+  DET: 'Detroit Pistons', GSW: 'Golden State Warriors', HOU: 'Houston Rockets', IND: 'Indiana Pacers',
+  LAC: 'LA Clippers', LAL: 'Los Angeles Lakers', MEM: 'Memphis Grizzlies', MIA: 'Miami Heat',
+  MIL: 'Milwaukee Bucks', MIN: 'Minnesota Timberwolves', NOP: 'New Orleans Pelicans', NYK: 'New York Knicks',
+  OKC: 'Oklahoma City Thunder', ORL: 'Orlando Magic', PHI: 'Philadelphia 76ers', PHX: 'Phoenix Suns',
+  POR: 'Portland Trail Blazers', SAC: 'Sacramento Kings', SAS: 'San Antonio Spurs', TOR: 'Toronto Raptors',
+  UTA: 'Utah Jazz', WAS: 'Washington Wizards',
+  // NHL
+  ANA: 'Anaheim Ducks', ARI: 'Arizona Coyotes', BUF: 'Buffalo Sabres', CGY: 'Calgary Flames',
+  CAR: 'Carolina Hurricanes', COL: 'Colorado Avalanche', CBJ: 'Columbus Blue Jackets',
+  EDM: 'Edmonton Oilers', FLA: 'Florida Panthers', MTL: 'Montreal Canadiens',
+  NSH: 'Nashville Predators', NJD: 'New Jersey Devils', NYI: 'New York Islanders', NYR: 'New York Rangers',
+  OTT: 'Ottawa Senators', PIT: 'Pittsburgh Penguins', SEA: 'Seattle Kraken', STL: 'St. Louis Blues',
+  TB: 'Tampa Bay Lightning', VAN: 'Vancouver Canucks', VGK: 'Vegas Golden Knights',
+  WPG: 'Winnipeg Jets', WSH: 'Washington Capitals', UTA: 'Utah Hockey Club',
+  // MLB
+  BAL: 'Baltimore Orioles', BOS: 'Boston Red Sox', NYY: 'New York Yankees', TB: 'Tampa Bay Rays',
+  TOR: 'Toronto Blue Jays', CWS: 'Chicago White Sox', CLE: 'Cleveland Guardians', DET: 'Detroit Tigers',
+  KC: 'Kansas City Royals', MIN: 'Minnesota Twins', HOU: 'Houston Astros', LAA: 'Los Angeles Angels',
+  OAK: 'Oakland Athletics', SEA: 'Seattle Mariners', TEX: 'Texas Rangers', ATL: 'Atlanta Braves',
+  MIA: 'Miami Marlins', NYM: 'New York Mets', PHI: 'Philadelphia Phillies', WAS: 'Washington Nationals',
+  CHC: 'Chicago Cubs', CIN: 'Cincinnati Reds', MIL: 'Milwaukee Brewers', PIT: 'Pittsburgh Pirates',
+  STL: 'St. Louis Cardinals', AZ: 'Arizona Diamondbacks', COL: 'Colorado Rockies',
+  LAD: 'Los Angeles Dodgers', SD: 'San Diego Padres', SF: 'San Francisco Giants',
+  // NFL
+  ARI: 'Arizona Cardinals', ATL: 'Atlanta Falcons', BAL: 'Baltimore Ravens', BUF: 'Buffalo Bills',
+  CAR: 'Carolina Panthers', CIN: 'Cincinnati Bengals', DAL: 'Dallas Cowboys',
+  DEN: 'Denver Broncos', GB: 'Green Bay Packers', IND: 'Indianapolis Colts',
+  JAX: 'Jacksonville Jaguars', KC: 'Kansas City Chiefs', LV: 'Las Vegas Raiders',
+  LAC: 'Los Angeles Chargers', LAR: 'Los Angeles Rams', MIA: 'Miami Dolphins',
+  NE: 'New England Patriots', NO: 'New Orleans Saints', NYG: 'New York Giants', NYJ: 'New York Jets',
+  PHI: 'Philadelphia Eagles', PIT: 'Pittsburgh Steelers', SF: 'San Francisco 49ers',
+  SEA: 'Seattle Seahawks', TB: 'Tampa Bay Buccaneers', TEN: 'Tennessee Titans', WAS: 'Washington Commanders',
+};
+
 // Live scores — ESPN API for score validation
 const SCORE_API_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const SCORE_SPORTS = [
@@ -912,7 +963,29 @@ async function scanSportsMomentum(liveTickerSet) {
       let tradeSide = 'yes'; // default: buy Yes
       const tag = isTourney ? 'TOURNEY' : 'MOMENTUM';
 
-      // A-0) Win probability model — highest priority signal
+      // A-00) Sportsbook edge — highest priority signal
+      // Compares DraftKings/FanDuel implied probability to Kalshi market price
+      if (!signalType && isGameMarket && ODDS_API_KEY) {
+        const teams = extractTeams(ticker);
+        const sbProb = await getSportsbookProb(ticker, teams);
+        if (sbProb && sbProb.impliedProb != null) {
+          const marketPrice = yesPrice;
+          const edge = sbProb.impliedProb - marketPrice;
+          console.log(`[odds] ${ticker} book=${(sbProb.impliedProb*100).toFixed(0)}% market=${(marketPrice*100).toFixed(0)}c edge=${(edge*100).toFixed(0)}c`);
+          if (edge >= ODDS_MIN_EDGE && marketPrice <= 0.50) {
+            signalType = 'BOOK-EDGE';
+            tradeSide = 'yes';
+            signalDetail = `${sbProb.source}: ${(sbProb.impliedProb*100).toFixed(0)}% vs market ${(marketPrice*100).toFixed(0)}c (edge +${(edge*100).toFixed(0)}c)`;
+          } else if (-edge >= ODDS_MIN_EDGE && marketPrice >= 0.50) {
+            signalType = 'BOOK-EDGE';
+            tradeSide = 'no';
+            const noPrice = 1 - marketPrice;
+            signalDetail = `${sbProb.source}: ${(sbProb.impliedProb*100).toFixed(0)}% vs market ${(marketPrice*100).toFixed(0)}c (edge +${((-edge)*100).toFixed(0)}c on No @ ${(noPrice*100).toFixed(0)}c)`;
+          }
+        }
+      }
+
+      // A-0) Win probability model — second highest priority signal
       // Compares ESPN/model win probability to Kalshi market price
       if (!signalType && isGameMarket && scoreCtx && scoreCtx.isLive) {
         const wp = await getWinProbForTicker(ticker, scoreCtx);
@@ -1096,8 +1169,8 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
-      // Late-game bias: skip early-game signals (except OB-IMBAL and WIN-PROB)
-      if (scoreCtx && scoreCtx.isLive && scoreCtx.period === 1 && signalType !== 'OB-IMBAL' && signalType !== 'WIN-PROB') {
+      // Late-game bias: skip early-game signals (except OB-IMBAL, WIN-PROB, BOOK-EDGE)
+      if (scoreCtx && scoreCtx.isLive && scoreCtx.period === 1 && signalType !== 'OB-IMBAL' && signalType !== 'WIN-PROB' && signalType !== 'BOOK-EDGE') {
         continue;
       }
 
@@ -1116,9 +1189,9 @@ async function scanSportsMomentum(liveTickerSet) {
       const volume = m.volume || 0;
       if (volume < pMinVol) continue;
 
-      // Volume-based position sizing — WIN-PROB gets double size (higher conviction)
+      // Volume-based position sizing — WIN-PROB and BOOK-EDGE get double size (higher conviction)
       let contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
-      if (signalType === 'WIN-PROB') contractCount = Math.min(contractCount * 2, 10);
+      if (signalType === 'WIN-PROB' || signalType === 'BOOK-EDGE') contractCount = Math.min(contractCount * 2, 10);
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
@@ -1143,10 +1216,10 @@ async function scanSportsMomentum(liveTickerSet) {
         continue;
       }
 
-      // Place order — WIN-PROB crosses the spread (10c+ edge absorbs it),
+      // Place order — WIN-PROB and BOOK-EDGE cross the spread (8-10c+ edge absorbs it),
       // other signals use mid-price to avoid spread cost
       let limitPrice;
-      const crossSpread = signalType === 'WIN-PROB';
+      const crossSpread = signalType === 'WIN-PROB' || signalType === 'BOOK-EDGE';
       if (tradeSide === 'no') {
         const noBestBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
         const bestYesBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
@@ -1158,7 +1231,7 @@ async function scanSportsMomentum(liveTickerSet) {
         } else {
           limitPrice = noAsk || Math.round((1 - yesPrice) * 100);
         }
-        limitPrice = Math.min(limitPrice, 45); // underdog cap
+        if (!crossSpread) limitPrice = Math.min(limitPrice, 45); // underdog cap (skip for BOOK-EDGE/WIN-PROB)
       } else {
         const yesBestBid = obYesBids.length ? obYesBids[obYesBids.length - 1][0] : null;
         const bestNoBid = obNoBids.length ? obNoBids[obNoBids.length - 1][0] : null;
@@ -1170,7 +1243,7 @@ async function scanSportsMomentum(liveTickerSet) {
         } else {
           limitPrice = yesAsk || Math.round(yesPrice * 100);
         }
-        limitPrice = Math.min(limitPrice, 45); // underdog cap
+        if (!crossSpread) limitPrice = Math.min(limitPrice, 45); // underdog cap (skip for BOOK-EDGE/WIN-PROB)
       }
       try {
         const orderParams = {
@@ -1638,6 +1711,145 @@ async function getScoreContext(ticker) {
     isLive: status === 'STATUS_IN_PROGRESS',
     isFinal: status === 'STATUS_FINAL',
   };
+}
+
+// --- Sportsbook odds integration ---
+// Cache: sportKey -> { events: [...], fetchTime }
+const oddsCache = new Map();
+
+/**
+ * Fetch live moneyline odds from The Odds API for a given sport.
+ * Returns array of events with implied probabilities per team.
+ */
+async function fetchSportsbookOdds(sportKey) {
+  if (!ODDS_API_KEY) return [];
+
+  const cached = oddsCache.get(sportKey);
+  if (cached && Date.now() - cached.fetchTime < ODDS_CACHE_MS) return cached.events;
+
+  try {
+    const url = `${ODDS_API_BASE}/${sportKey}/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=decimal&bookmakers=draftkings,fanduel`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.warn(`[odds] API error for ${sportKey}: ${resp.status}`);
+      return cached?.events || [];
+    }
+    const data = await resp.json();
+
+    // Parse events into implied probabilities
+    const events = [];
+    for (const event of data) {
+      // Only care about live/upcoming games
+      const homeTeam = event.home_team;
+      const awayTeam = event.away_team;
+
+      // Average across bookmakers for more robust line
+      const probs = {}; // teamName -> [impliedProbs]
+      for (const bk of (event.bookmakers || [])) {
+        const h2h = bk.markets?.find(m => m.key === 'h2h');
+        if (!h2h) continue;
+        for (const outcome of h2h.outcomes) {
+          if (!probs[outcome.name]) probs[outcome.name] = [];
+          // Decimal odds to implied prob: 1 / odds
+          probs[outcome.name].push(1 / outcome.price);
+        }
+      }
+
+      // Average the implied probs and normalize (remove vig)
+      const teamProbs = {};
+      let total = 0;
+      for (const [name, arr] of Object.entries(probs)) {
+        const avg = arr.reduce((s, p) => s + p, 0) / arr.length;
+        teamProbs[name] = avg;
+        total += avg;
+      }
+      // Normalize to remove vig (total > 1.0)
+      if (total > 0) {
+        for (const name of Object.keys(teamProbs)) {
+          teamProbs[name] /= total;
+        }
+      }
+
+      events.push({
+        homeTeam,
+        awayTeam,
+        commenceTime: event.commence_time,
+        teamProbs, // { "Boston Celtics": 0.62, "Cleveland Cavaliers": 0.38 }
+      });
+    }
+
+    oddsCache.set(sportKey, { events, fetchTime: Date.now() });
+    return events;
+  } catch (e) {
+    console.warn(`[odds] Fetch error for ${sportKey}: ${e.message}`);
+    return cached?.events || [];
+  }
+}
+
+/**
+ * Build reverse lookup: team abbreviation -> full team name used by The Odds API.
+ * Since TEAM_ABBR_MAP has duplicates across sports, we match contextually.
+ */
+function findOddsTeamName(abbr, oddsEvents) {
+  // First try direct map lookup
+  const mapped = TEAM_ABBR_MAP[abbr];
+  if (mapped) {
+    // Check if this team name appears in any event
+    for (const ev of oddsEvents) {
+      if (ev.homeTeam === mapped || ev.awayTeam === mapped) return mapped;
+      // Also check if any teamProbs key matches
+      if (ev.teamProbs[mapped] != null) return mapped;
+    }
+  }
+
+  // Fuzzy fallback: try matching abbreviation as substring of team name
+  for (const ev of oddsEvents) {
+    for (const teamName of [ev.homeTeam, ev.awayTeam]) {
+      // Extract city abbreviation from team name
+      const words = teamName.split(' ');
+      const cityAbbr = words[0].substring(0, 3).toUpperCase();
+      if (cityAbbr === abbr) return teamName;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get sportsbook implied probability for a team in a game.
+ * Returns { impliedProb, source } or null.
+ */
+async function getSportsbookProb(ticker, teams) {
+  if (!ODDS_API_KEY || teams.length < 2) return null;
+
+  // Determine sport from ticker
+  const sportMatch = ticker.match(/^KX(NBA|NHL|MLB|MLS|NFL)/);
+  if (!sportMatch) return null;
+  const prefix = 'KX' + sportMatch[1];
+  const sportKey = ODDS_SPORT_MAP[prefix];
+  if (!sportKey) return null;
+
+  // Which team does this ticker represent? (last segment after dash)
+  const tickerTeam = ticker.split('-').pop();
+
+  const events = await fetchSportsbookOdds(sportKey);
+  if (!events.length) return null;
+
+  // Find the team name in odds data
+  const teamName = findOddsTeamName(tickerTeam, events);
+  if (!teamName) return null;
+
+  // Find the event containing this team
+  for (const ev of events) {
+    if (ev.teamProbs[teamName] != null) {
+      return {
+        impliedProb: ev.teamProbs[teamName],
+        source: 'sportsbook',
+      };
+    }
+  }
+
+  return null;
 }
 
 function sleep(ms) {
