@@ -108,12 +108,19 @@ const FADE_MIN_YES = 0.60;            // only fade when Yes >= 60c (No <= 40c)
 const FADE_MAX_YES = 0.90;            // don't fade above 90c (too certain)
 
 // Sports game series — fetched explicitly so they aren't crowded out by weather/politics
-const SPORTS_SERIES = ['KXNBAGAME', 'KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNHLGAME', 'KXNFLGAME', 'KXMLSGAME'];
+const SPORTS_SERIES = ['KXNBAGAME', 'KXMLBSTGAME', 'KXNHLGAME', 'KXNFLGAME', 'KXMLSGAME'];
 
 // Settlement sniping — buy near-certain outcomes for guaranteed small profit
-const SNIPE_MIN_BID = 0.95;           // min bid price to consider sniping
+const SNIPE_MIN_BID = 0.95;           // min bid price to consider sniping (orderbook-only snipes)
 const SNIPE_MAX_CONTRACTS = 10;       // max contracts per snipe
-const SNIPE_SERIES = ['KXMLBSTGAME', 'KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXNBAGAME'];
+const SNIPE_SERIES = ['KXMLBSTGAME', 'KXNBAGAME', 'KXNHLGAME', 'KXNFLGAME', 'KXMLSGAME'];
+
+// Score-based sniping — buy when live score indicates near-certain outcome
+// These thresholds define "almost guaranteed" based on sport-specific game state
+// Kalshi taker fee is ~0.7c/contract, so we need at least ~2c margin after fees
+const SCORE_SNIPE_MAX_PRICE = 96;     // max price we'll pay (in cents) — 4c gross, ~3c after fee
+const SCORE_SNIPE_MIN_PRICE = 80;     // don't snipe below 80c — not certain enough
+const TAKER_FEE_CENTS = 0.7;          // Kalshi taker fee per contract per side
 
 // Orderbook imbalance — signal based on bid depth ratio
 const OB_IMBALANCE_RATIO = 5;         // 5:1 ratio = strong signal
@@ -126,7 +133,7 @@ const VOLUME_SPIKE_MIN_VOLUME = 50;    // min absolute volume delta for spike
 const ENTERTAINMENT_SERIES = []; // was: ['KXNETFLIXRANKSHOWGLOBAL', ...] — disabled: multi-day markets don't fit momentum
 
 // Cross-market arbitrage — detect pricing inconsistencies across correlated markets
-const ARB_SERIES = ['KXWBCGAME', 'KXWBCTOTAL', 'KXWBCSPREAD', 'KXWBCF5', 'KXMLBSTGAME', 'KXNBAGAME'];
+const ARB_SERIES = ['KXMLBSTGAME', 'KXNBAGAME', 'KXNHLGAME', 'KXNFLGAME', 'KXMLSGAME'];
 const ARB_MIN_DIVERGENCE = 0.15; // 15c+ divergence between correlated markets
 const ARB_MAX_CONTRACTS = 3;     // conservative sizing for arb trades
 
@@ -195,7 +202,6 @@ const SCORE_SPORTS = [
   { key: 'soccer/eng.1', prefix: 'KX' },
   { key: 'soccer/usa.1', prefix: 'KX' },
   { key: 'hockey/nhl', prefix: 'KXNHL' },
-  { key: 'baseball/world-baseball-classic', prefix: 'KXWBC' },
 ];
 
 // Universal stop-loss for auto-sell (all positions, not just sports)
@@ -216,16 +222,20 @@ const MOMENTUM_MAX_PER_GAME = 1;       // max 1 ticker per game (don't buy both 
 const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB', 'KXNBAMENTION', 'KXNFLMENTION', 'KXMLBMENTION', 'KXNHLMENTION']; // skip parlays, NCAA, and mention markets
 
 export async function startBot() {
-  console.log('\n================================================');
-  console.log('  Signal BonBon — Sports Momentum Trader v2.0');
-  console.log('================================================');
+  const sportsList = SPORTS_SERIES.map(s => s.replace('KX', '').replace('GAME', '')).join(', ');
+  console.log('\n====================================================');
+  console.log('  Signal BonBon — Sports Momentum + Sniper v3.0');
+  console.log('====================================================');
   console.log(`Mode:           ${config.dryRun ? 'DRY RUN' : 'LIVE'}`);
   console.log(`Poll interval:  ${config.pollIntervalSeconds}s`);
-  console.log(`Min divergence: ${config.minDivergenceBps} bps`);
-  console.log(`Min IRR:        ${config.minIRR}%`);
-  console.log(`Position size:  $${config.positionSizeUSD}`);
-  console.log(`Max positions:  ${config.maxOpenPositions}`);
-  console.log(`Markets:        ${config.markets.length}\n`);
+  console.log(`Sports:         ${sportsList}`);
+  console.log(`Signals:        BOOK-EDGE (${(ODDS_MIN_EDGE*100).toFixed(0)}c) | WIN-PROB (${(WIN_PROB_MIN_EDGE*100).toFixed(0)}c) | MOMENTUM | FADE | REVERSION | OB-IMBAL | VOL-SPIKE`);
+  console.log(`Sniper:         OB (${(SNIPE_MIN_BID*100).toFixed(0)}c+) | Score-based (${SCORE_SNIPE_MIN_PRICE}-${SCORE_SNIPE_MAX_PRICE}c)`);
+  console.log(`Auto-hedge:     ON (min ${(3).toFixed(0)}c net after ${(TAKER_FEE_CENTS*2).toFixed(1)}c fees)`);
+  console.log(`Sizing:         ${MOMENTUM_SIZE_TIERS.map(([v,c]) => `${v}+vol=${c}x`).join(', ')} | 2x for BOOK-EDGE/WIN-PROB`);
+  console.log(`Exits:          TP@90c | SL@${(MOMENTUM_STOP_LOSS*100).toFixed(0)}c | Trail@${(MOMENTUM_TRAILING_STOP*100).toFixed(0)}c`);
+  console.log(`Filters:        spread<${(MOMENTUM_MAX_SPREAD*100).toFixed(0)}c | vol>${MOMENTUM_MIN_VOLUME} | depth>${MOMENTUM_MIN_BID_DEPTH} | live games only`);
+  console.log(`Position size:  $${config.positionSizeUSD} | Max positions: ${config.maxOpenPositions}\n`);
 
   initClients();
 
@@ -500,7 +510,7 @@ async function poll() {
 
       // Decide whether to sell
       // Skip stop-loss for game markets — let them ride to settlement
-      const isGameTicker = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
+      const isGameTicker = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker);
       let sellReason = null;
       if (bestBid >= 0.95) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
@@ -755,7 +765,7 @@ async function scanSportsMomentum(liveTickerSet) {
     // For live game markets, fetch orderbook to get real-time mid-prices
     // The bulk /markets endpoint returns stale yes_ask/last_price
     const gameMarketTickers = markets
-      .filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(m.ticker))
+      .filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|NFL)/.test(m.ticker))
       .filter(m => {
         const p = currentPrices.get(m.ticker) || 0;
         return p >= 0.20 && p <= 0.85;
@@ -813,12 +823,13 @@ async function scanSportsMomentum(liveTickerSet) {
       const trailingStop = mp.isTourney ? TOURNEY_TRAILING_STOP : MOMENTUM_TRAILING_STOP;
       const takeProfit = mp.isTourney ? TOURNEY_TAKE_PROFIT : MOMENTUM_TAKE_PROFIT;
 
-      // For game markets: only exit on take-profit (90c+), let the rest ride to settlement
-      const isGameTkr = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
+      // Exit logic — game markets now get stop-losses too (one-sided bets were 0-for-19)
+      const isGameTkr = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker);
+      const isHedged = mp.hedged || false; // hedged positions ride to settlement safely
       let exitReason = null;
-      if (!isGameTkr && curPrice <= mp.entryPrice - stopLoss) {
+      if (!isHedged && curPrice <= mp.entryPrice - stopLoss) {
         exitReason = `STOP-LOSS (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
-      } else if (!isGameTkr && curPrice <= mp.highestSeen - trailingStop) {
+      } else if (!isHedged && curPrice <= mp.highestSeen - trailingStop) {
         exitReason = `TRAILING-STOP (${(curPrice*100).toFixed(0)}c, peak ${(mp.highestSeen*100).toFixed(0)}c)`;
       } else if (curPrice >= 0.90) {
         exitReason = `TAKE-PROFIT (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
@@ -874,7 +885,7 @@ async function scanSportsMomentum(liveTickerSet) {
       const prefix = m.ticker.match(/^[A-Z]+/)?.[0];
       if (prefix) seenSeries.add(prefix);
     }
-    const gameCount = markets.filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|WBC|NFL)GAME/.test(m.ticker)).length;
+    const gameCount = markets.filter(m => m.ticker && /^KX(NBA|NHL|MLB|MLS|NFL)GAME/.test(m.ticker)).length;
     console.log(`[momentum] Scanning ${markets.length} markets (${inRange} in price range, ${gameCount} game mkts, ${momentumPositions.size} active, ${exits} exited) | series: ${[...seenSeries].join(', ')}`);
 
     let signals = 0;
@@ -888,7 +899,7 @@ async function scanSportsMomentum(liveTickerSet) {
     const gameSession = (t) => {
       // Game market tickers: KXMLSGAME-26MAR08CINTOR-TOR, KXNBAGAME-26MAR081930BOSCLE-BOS
       // Group by everything except the last segment (team/outcome suffix)
-      if (/^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(t)) {
+      if (/^KX(NBA|NHL|MLB|MLS|NFL)/.test(t)) {
         const lastDash = t.lastIndexOf('-');
         return lastDash > 0 ? t.substring(0, lastDash) : t;
       }
@@ -944,7 +955,7 @@ async function scanSportsMomentum(liveTickerSet) {
       }
 
       // Debug: log NBA/NHL game markets to see why they don't generate signals
-      const isGameMarket = /^KX(NBA|NHL|MLB|MLS|WBC|NFL)/.test(ticker);
+      const isGameMarket = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker);
 
       // Need 4+ data points for momentum/reversion, but WIN-PROB works with just 1
       if (history.length < 4 && !isGameMarket) continue;
@@ -1092,7 +1103,7 @@ async function scanSportsMomentum(liveTickerSet) {
         // Score-aware: skip blowouts (game is decided, bad risk/reward)
         if (scoreCtx && scoreCtx.isLive && scoreCtx.scores && scoreCtx.scores.length >= 2) {
           const scoreDiff = Math.abs(scoreCtx.scores[0] - scoreCtx.scores[1]);
-          const sport = ticker.match(/^KX(NBA|NHL|MLB|MLS|WBC|NFL)/)?.[1];
+          const sport = ticker.match(/^KX(NBA|NHL|MLB|MLS|NFL)/)?.[1];
           const blowoutThreshold = sport === 'NBA' ? 25 : sport === 'NFL' ? 21 : sport === 'NHL' ? 4 : 5;
           if (scoreDiff >= blowoutThreshold) {
             if (signalType) console.log(`[momentum-dbg] SKIP ${ticker}: blowout (${scoreCtx.display}, diff=${scoreDiff})`);
@@ -1205,9 +1216,31 @@ async function scanSportsMomentum(liveTickerSet) {
       const volume = m.volume || 0;
       if (volume < pMinVol) continue;
 
+      // For game markets, only allow one-sided bets on high-conviction signals.
+      // Weak signals (MOMENTUM, FADE, REVERSION, OB-IMBAL, VOL-SPIKE) went 0-for-19
+      // one-sided in recent data. Require BOOK-EDGE or WIN-PROB for unhedged game bets.
+      const isHighConviction = signalType === 'BOOK-EDGE' || signalType === 'WIN-PROB';
+      if (isGameMarket && !isHighConviction) {
+        // Check if a hedge is likely available (combined cost under ~95c)
+        let hedgeAskCheck = null;
+        if (tradeSide === 'yes' && obYesBids.length) {
+          hedgeAskCheck = 100 - obYesBids[obYesBids.length - 1][0]; // No ask
+        } else if (tradeSide === 'no' && obNoBids.length) {
+          hedgeAskCheck = 100 - obNoBids[obNoBids.length - 1][0]; // Yes ask
+        }
+        const estLimitPrice = tradeSide === 'no'
+          ? Math.round((1 - yesPrice) * 100)
+          : Math.round(yesPrice * 100);
+        const estCombined = hedgeAskCheck != null ? estLimitPrice + hedgeAskCheck : null;
+        if (estCombined == null || estCombined > 95) {
+          console.log(`[momentum] SKIP ${ticker} ${signalType}: weak signal + no hedge available (est combined=${estCombined || '?'}c)`);
+          continue;
+        }
+      }
+
       // Volume-based position sizing — WIN-PROB and BOOK-EDGE get double size (higher conviction)
       let contractCount = (MOMENTUM_SIZE_TIERS.find(([minVol]) => volume >= minVol) || [0, 1])[1];
-      if (signalType === 'WIN-PROB' || signalType === 'BOOK-EDGE') contractCount = Math.min(contractCount * 2, 10);
+      if (isHighConviction) contractCount = Math.min(contractCount * 2, 10);
 
       signals++;
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
@@ -1288,6 +1321,52 @@ async function scanSportsMomentum(liveTickerSet) {
             isTourney,
             side: tradeSide,
           });
+
+          // --- AUTO-HEDGE: buy the opposite side if combined cost + fees < 100c ---
+          // Kalshi charges ~0.7c taker fee per contract per side.
+          // Two legs = ~1.4c total fees. We need: combinedCost + 2*fee < 100c
+          const hedgeSide = tradeSide === 'yes' ? 'no' : 'yes';
+          // Opposite side ask: if we bought Yes, No ask = 100 - best Yes bid
+          let hedgeAsk = null;
+          if (hedgeSide === 'no' && obYesBids.length) {
+            hedgeAsk = 100 - obYesBids[obYesBids.length - 1][0];
+          } else if (hedgeSide === 'yes' && obNoBids.length) {
+            hedgeAsk = 100 - obNoBids[obNoBids.length - 1][0];
+          }
+          const combinedCost = hedgeAsk != null ? limitPrice + hedgeAsk : null;
+          const totalFees = 2 * TAKER_FEE_CENTS; // fee on both legs
+          const netProfit = combinedCost != null ? 100 - combinedCost - totalFees : null;
+          if (netProfit != null && netProfit >= 3) {
+            // At least 3c net profit after fees — worth hedging
+            const netProfitTotal = (netProfit * filled / 100).toFixed(2);
+            console.log(`[hedge] >> ${ticker} | ${hedgeSide.toUpperCase()} @ ${hedgeAsk}c | combined=${combinedCost}c + ${totalFees.toFixed(1)}c fees | net profit=$${netProfitTotal} on ${filled} contracts`);
+            if (!config.dryRun) {
+              try {
+                const hedgeOrder = await getKalshiClient().callApi('CreateOrder', {
+                  ticker, action: 'buy', side: hedgeSide, type: 'limit',
+                  count: filled,
+                  ...(hedgeSide === 'no'
+                    ? { no_price: hedgeAsk }
+                    : { yes_price: hedgeAsk }),
+                });
+                const hedgeFilled = hedgeOrder?.order?.fill_count ?? 0;
+                const lockedProfit = (netProfit * hedgeFilled / 100).toFixed(2);
+                console.log(`${C.buy}[hedge]    HEDGED ${hedgeFilled}/${filled} ${hedgeSide.toUpperCase()} @ ${hedgeAsk}c | locked net profit=$${lockedProfit}${C.reset}`);
+                if (hedgeFilled > 0) {
+                  recordTrade(ticker, hedgeSide, hedgeAsk / 100, hedgeAsk / 100, hedgeFilled);
+                  // Mark position as hedged so it skips stop-loss (guaranteed profit, let it settle)
+                  const mp = momentumPositions.get(ticker);
+                  if (mp) mp.hedged = true;
+                }
+              } catch (e) {
+                console.warn(`[hedge]    Hedge order failed: ${e.message}`);
+              }
+            } else {
+              console.log(`[hedge]    DRY RUN: would hedge ${filled} ${hedgeSide.toUpperCase()} @ ${hedgeAsk}c | net profit=$${netProfitTotal}`);
+            }
+          } else if (combinedCost != null) {
+            console.log(`[hedge] ${ticker}: no arb — combined=${combinedCost}c + ${totalFees.toFixed(1)}c fees = ${(combinedCost + totalFees).toFixed(1)}c (need <97c)`);
+          }
         }
       } catch (e) {
         console.error(`[momentum]    Order failed: ${e.message}`);
@@ -1304,8 +1383,15 @@ async function scanSportsMomentum(liveTickerSet) {
 }
 
 /**
- * Settlement sniping — buy near-certain outcomes (95c+) for small guaranteed profit.
- * These are markets where one side is nearly settled (e.g. team winning 10-0 in 8th inning).
+ * Settlement sniping — buy near-certain outcomes for guaranteed profit.
+ *
+ * Two modes:
+ * 1. ORDERBOOK SNIPE: best bid >= 95c → buy at bid (original logic)
+ * 2. SCORE SNIPE: live score indicates near-certain winner → buy at ask up to 97c
+ *    - NBA: leading by 15+ in 4Q with <5min left, or 20+ in 4Q
+ *    - NHL: leading by 3+ in 3P, or 2+ in 3P with <5min left
+ *    - NFL: leading by 17+ in 4Q, or 10+ with <2min left
+ *    - MLB: leading by 5+ in 8th+, or 4+ in 9th+
  */
 async function scanSettlementSnipes(liveTickerSet) {
   try {
@@ -1332,45 +1418,138 @@ async function scanSettlementSnipes(liveTickerSet) {
       const ticker = m.ticker;
       if (!ticker || liveTickerSet.has(ticker)) continue;
 
-      // Check orderbook for 95c+ bids
+      // Fetch orderbook
+      let obYesBids = [], obNoBids = [];
       try {
         const obResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}/orderbook`);
         if (!obResp.ok) continue;
         const obData = await obResp.json();
         const ob = obData.orderbook || obData;
-        const yesBids = ob.yes || [];
-        const noBids = ob.no || [];
+        obYesBids = ob.yes || [];
+        obNoBids = ob.no || [];
+      } catch (e) {
+        console.warn(`[snipe] ${ticker}: ${e.message}`);
+        continue;
+      }
 
-        // Check Yes side: if best Yes bid >= 95c, buy Yes
-        let snipeSide = null, snipePrice = null, snipeBid = null;
-        if (yesBids.length) {
-          const bestYes = yesBids[yesBids.length - 1][0] / 100;
-          if (bestYes >= SNIPE_MIN_BID) {
-            snipeSide = 'yes';
-            snipePrice = Math.round(bestYes * 100); // buy at the bid
-            snipeBid = bestYes;
+      // --- Mode 1: ORDERBOOK SNIPE (95c+ bids) — requires score confirmation ---
+      // A 95c bid doesn't mean the game is decided. Snipes went 4-4 (50%) without
+      // score verification, losing $17+ net. Now we require the live score to back it up.
+      let snipeSide = null, snipePrice = null, snipeMode = null;
+      const obScoreCtx = await getScoreContext(ticker);
+      const obGameDecided = obScoreCtx && obScoreCtx.isLive && obScoreCtx.scores &&
+        obScoreCtx.scores.length >= 2 && (() => {
+          const s0 = Number(obScoreCtx.scores[0]), s1 = Number(obScoreCtx.scores[1]);
+          if (isNaN(s0) || isNaN(s1)) return false;
+          const diff = Math.abs(s0 - s1);
+          const sport = obScoreCtx.sport || ticker.match(/^KX(NBA|NHL|MLB|MLS|NFL)/)?.[1]?.toLowerCase();
+          const p = Number(obScoreCtx.period) || 0;
+          if (sport === 'basketball' || sport === 'NBA' || sport === 'nba') return p >= 4 && diff >= 10;
+          if (sport === 'hockey' || sport === 'NHL' || sport === 'nhl' || sport === 'icehockey') return p >= 3 && diff >= 2;
+          if (sport === 'football' || sport === 'NFL' || sport === 'nfl') return p >= 4 && diff >= 10;
+          if (sport === 'baseball' || sport === 'MLB' || sport === 'mlb') return p >= 7 && diff >= 3;
+          return diff >= 5;
+        })();
+
+      if (obYesBids.length) {
+        const bestYes = obYesBids[obYesBids.length - 1][0];
+        if (bestYes >= SNIPE_MIN_BID * 100 && obGameDecided) {
+          snipeSide = 'yes';
+          snipePrice = bestYes;
+          snipeMode = 'OB';
+        } else if (bestYes >= SNIPE_MIN_BID * 100) {
+          console.log(`[snipe] OB-SKIP ${ticker}: 95c+ bid but score not decisive (${obScoreCtx?.display || 'no score'})`);
+        }
+      }
+      if (!snipeSide && obNoBids.length) {
+        const bestNo = obNoBids[obNoBids.length - 1][0];
+        if (bestNo >= SNIPE_MIN_BID * 100 && obGameDecided) {
+          snipeSide = 'no';
+          snipePrice = bestNo;
+          snipeMode = 'OB';
+        } else if (bestNo >= SNIPE_MIN_BID * 100) {
+          console.log(`[snipe] OB-SKIP ${ticker}: 95c+ bid but score not decisive (${obScoreCtx?.display || 'no score'})`);
+        }
+      }
+
+      // --- Mode 2: SCORE SNIPE (live score shows near-certain outcome) ---
+      if (!snipeSide) {
+        const scoreCtx = await getScoreContext(ticker);
+        if (scoreCtx && scoreCtx.isLive && scoreCtx.scores && scoreCtx.scores.length >= 2) {
+          const s0 = Number(scoreCtx.scores[0]);
+          const s1 = Number(scoreCtx.scores[1]);
+          if (isNaN(s0) || isNaN(s1)) continue;
+          const diff = s0 - s1;  // positive = team[0] (first in ticker) leading
+          const absDiff = Math.abs(diff);
+          const sport = scoreCtx.sport || ticker.match(/^KX(NBA|NHL|MLB|MLS|NFL)/)?.[1]?.toLowerCase();
+          const period = Number(scoreCtx.period) || 0;
+          const clockMin = parseClockMinutes(scoreCtx.clock);
+
+          // Determine if the leading team has a near-certain win
+          let isNearCertain = false;
+          if (sport === 'basketball' || sport === 'NBA' || sport === 'nba') {
+            // NBA: 15+ lead in 4Q with <5min, or 20+ in 4Q at any time
+            isNearCertain = period >= 4 && (absDiff >= 20 || (absDiff >= 15 && clockMin <= 5));
+          } else if (sport === 'hockey' || sport === 'NHL' || sport === 'nhl' || sport === 'icehockey') {
+            // NHL: 3+ lead in 3P, or 2+ in 3P with <5min
+            isNearCertain = period >= 3 && (absDiff >= 3 || (absDiff >= 2 && clockMin <= 5));
+          } else if (sport === 'football' || sport === 'NFL' || sport === 'nfl') {
+            // NFL: 17+ in 4Q, or 10+ with <2min
+            isNearCertain = period >= 4 && (absDiff >= 17 || (absDiff >= 10 && clockMin <= 2));
+          } else if (sport === 'baseball' || sport === 'MLB' || sport === 'mlb') {
+            // MLB: 5+ in 8th+, or 4+ in 9th+
+            isNearCertain = (period >= 8 && absDiff >= 5) || (period >= 9 && absDiff >= 4);
+          }
+
+          if (isNearCertain) {
+            // Figure out which ticker team is winning and buy that side
+            const teams = extractTeams(ticker);
+            const winnerIdx = diff > 0 ? 0 : 1;
+            // For GAME tickers, team[0] winning -> buy Yes if ticker ends with team[0],
+            // otherwise buy No. Kalshi game tickers: last team in ticker = Yes side.
+            const yesTeamIdx = teams.length >= 2 ? 1 : 0; // last team is typically Yes
+            const wantYes = winnerIdx === yesTeamIdx;
+
+            snipeSide = wantYes ? 'yes' : 'no';
+            snipeMode = 'SCORE';
+
+            // Buy at the ask (cross the spread) — we're confident the outcome is certain
+            if (snipeSide === 'yes' && obNoBids.length) {
+              // Yes ask = 100 - best No bid
+              snipePrice = 100 - obNoBids[obNoBids.length - 1][0];
+            } else if (snipeSide === 'no' && obYesBids.length) {
+              // No ask = 100 - best Yes bid
+              snipePrice = 100 - obYesBids[obYesBids.length - 1][0];
+            } else {
+              // Fallback: use last_price
+              const lastYes = (m.last_price || m.yes_ask || 0);
+              snipePrice = snipeSide === 'yes' ? lastYes : (100 - lastYes);
+            }
+
+            // Enforce price bounds
+            if (snipePrice < SCORE_SNIPE_MIN_PRICE || snipePrice > SCORE_SNIPE_MAX_PRICE) {
+              console.log(`[snipe] SCORE ${ticker}: ${scoreCtx.display} — ${snipeSide.toUpperCase()} ask=${snipePrice}c OUT OF RANGE (${SCORE_SNIPE_MIN_PRICE}-${SCORE_SNIPE_MAX_PRICE}c)`);
+              snipeSide = null;
+              snipePrice = null;
+            } else {
+              const snipeNet = (100 - snipePrice - TAKER_FEE_CENTS).toFixed(1);
+              console.log(`[snipe] SCORE signal: ${scoreCtx.display} → ${snipeSide.toUpperCase()} @ ${snipePrice}c | ~${snipeNet}c net/contract (${absDiff}-pt lead, P${period} ${scoreCtx.clock})`);
+            }
           }
         }
-        // Check No side: if best No bid >= 95c, buy No
-        if (!snipeSide && noBids.length) {
-          const bestNo = noBids[noBids.length - 1][0] / 100;
-          if (bestNo >= SNIPE_MIN_BID) {
-            snipeSide = 'no';
-            snipePrice = Math.round(bestNo * 100);
-            snipeBid = bestNo;
-          }
-        }
+      }
 
-        if (!snipeSide) continue;
+      if (!snipeSide) continue;
 
-        const title = (m.title || m.subtitle || ticker).substring(0, 50);
-        console.log(`[snipe] >> ${title} | ${ticker} | ${snipeSide.toUpperCase()} bid=${(snipeBid*100).toFixed(0)}c`);
+      const title = (m.title || m.subtitle || ticker).substring(0, 50);
+      console.log(`[snipe] >> ${snipeMode} ${title} | ${ticker} | ${snipeSide.toUpperCase()} @ ${snipePrice}c`);
 
-        if (config.dryRun) {
-          console.log(`[snipe]    DRY RUN: would buy ${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c`);
-          continue;
-        }
+      if (config.dryRun) {
+        console.log(`[snipe]    DRY RUN: would buy ${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c`);
+        continue;
+      }
 
+      try {
         const order = await getKalshiClient().callApi('CreateOrder', {
           ticker, action: 'buy', side: snipeSide, type: 'limit',
           count: SNIPE_MAX_CONTRACTS,
@@ -1379,21 +1558,32 @@ async function scanSettlementSnipes(liveTickerSet) {
             : { yes_price: snipePrice }),
         });
         const filled = order?.order?.fill_count ?? 0;
-        console.log(`${C.buy}[snipe]    BOUGHT ${filled}/${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c${C.reset}`);
+        console.log(`${C.buy}[snipe]    BOUGHT ${filled}/${SNIPE_MAX_CONTRACTS} ${snipeSide.toUpperCase()} @ ${snipePrice}c (${snipeMode})${C.reset}`);
         liveTickerSet.add(ticker);
         if (filled > 0) {
           recordTrade(ticker, snipeSide, snipePrice / 100, snipePrice / 100, filled);
           snipes++;
         }
-        await sleep(300);
       } catch (e) {
-        console.warn(`[snipe] ${ticker}: ${e.message}`);
+        console.error(`[snipe]    Order failed: ${e.message}`);
       }
+      await sleep(300);
     }
     if (snipes > 0) console.log(`[snipe] Placed ${snipes} snipe trades`);
   } catch (e) {
     console.warn(`[snipe] Scanner error: ${e.message}`);
   }
+}
+
+/**
+ * Parse clock string (e.g. "4:32", "12:00", "0:45.2") into minutes remaining.
+ * Returns Infinity if unparseable.
+ */
+function parseClockMinutes(clock) {
+  if (!clock) return Infinity;
+  const match = clock.match(/(\d+):(\d+)/);
+  if (!match) return Infinity;
+  return parseInt(match[1]) + parseInt(match[2]) / 60;
 }
 
 /**
