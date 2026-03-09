@@ -142,6 +142,8 @@ const SCORE_SPORTS = [
   { key: 'football/nfl', prefix: 'KXNFL' },
   { key: 'soccer/eng.1', prefix: 'KX' },
   { key: 'soccer/usa.1', prefix: 'KX' },
+  { key: 'hockey/nhl', prefix: 'KXNHL' },
+  { key: 'baseball/world-baseball-classic', prefix: 'KXWBC' },
 ];
 
 // Universal stop-loss for auto-sell (all positions, not just sports)
@@ -648,14 +650,18 @@ async function scanSportsMomentum(liveTickerSet) {
     const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
     const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
     const todayTag = String(nowET.getFullYear()).slice(-2) + MONTHS[nowET.getMonth()] + String(nowET.getDate()).padStart(2, '0');
-    console.log(`[momentum] Today tag: ${todayTag}`);
+    // Also include yesterday — late-night games (west coast) are tagged with yesterday's date
+    const yesterdayET = new Date(nowET);
+    yesterdayET.setDate(yesterdayET.getDate() - 1);
+    const yesterdayTag = String(yesterdayET.getFullYear()).slice(-2) + MONTHS[yesterdayET.getMonth()] + String(yesterdayET.getDate()).padStart(2, '0');
+    console.log(`[momentum] Date tags: ${todayTag}, ${yesterdayTag}`);
     for (const series of SPORTS_SERIES) {
       try {
         const sResp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?limit=200&series_ticker=${series}&status=open`);
         if (sResp.ok) {
           const sData = await sResp.json();
           for (const m of (sData.markets || [])) {
-            if (m.ticker && m.ticker.includes(todayTag) && !markets.some(ex => ex.ticker === m.ticker)) {
+            if (m.ticker && (m.ticker.includes(todayTag) || m.ticker.includes(yesterdayTag)) && !markets.some(ex => ex.ticker === m.ticker)) {
               markets.push(m);
             }
           }
