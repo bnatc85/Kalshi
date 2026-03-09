@@ -136,6 +136,7 @@ const WIN_PROB_STRONG_EDGE = 0.20;     // 20c+ = strong signal, allow bigger siz
 
 // Sportsbook odds — compare Kalshi prices to DraftKings/FanDuel lines
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '';
+console.log(`[config] ODDS_API_KEY: ${ODDS_API_KEY ? 'set (' + ODDS_API_KEY.substring(0, 8) + '...)' : 'EMPTY'}`);
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports';
 const ODDS_CACHE_MS = 3 * 60 * 1000;  // cache odds for 3 minutes (save API calls)
 const ODDS_MIN_EDGE = 0.08;           // 8c+ edge vs sportsbook implied prob
@@ -209,7 +210,8 @@ const MOMENTUM_SIZE_TIERS = [
 ];
 const MOMENTUM_MAX_HOURS = 48;         // markets closing within 48h
 const MOMENTUM_MIN_BID_DEPTH = 2;      // min bid-side contracts for liquidity
-const MOMENTUM_MIN_VOLUME = 10;        // min contracts traded on ticker before entering
+const MOMENTUM_MIN_VOLUME = 50;        // min contracts traded on ticker before entering
+const MOMENTUM_MAX_SPREAD = 0.15;      // skip if bid-ask spread > 15c (illiquid)
 const MOMENTUM_MAX_PER_GAME = 1;       // max 1 ticker per game (don't buy both sides)
 const MOMENTUM_SKIP_PREFIXES = ['KXMVE', 'KXNCAABB', 'KXNBAMENTION', 'KXNFLMENTION', 'KXMLBMENTION', 'KXNHLMENTION']; // skip parlays, NCAA, and mention markets
 
@@ -968,7 +970,9 @@ async function scanSportsMomentum(liveTickerSet) {
       if (!signalType && isGameMarket && ODDS_API_KEY) {
         const teams = extractTeams(ticker);
         const sbProb = await getSportsbookProb(ticker, teams);
-        if (sbProb && sbProb.impliedProb != null) {
+        if (!sbProb) {
+          console.log(`[odds-dbg] ${ticker} no match (teams=${teams.join(',')} tickerTeam=${ticker.split('-').pop()})`);
+        } else if (sbProb.impliedProb != null) {
           const marketPrice = yesPrice;
           const edge = sbProb.impliedProb - marketPrice;
           console.log(`[odds] ${ticker} book=${(sbProb.impliedProb*100).toFixed(0)}% market=${(marketPrice*100).toFixed(0)}c edge=${(edge*100).toFixed(0)}c`);
@@ -1118,6 +1122,18 @@ async function scanSportsMomentum(liveTickerSet) {
         }
       } catch {}
       await sleep(200);
+
+      // Spread check: skip illiquid markets where bid and ask are far apart
+      {
+        const bestYesBidP = obYesBids.length ? obYesBids[obYesBids.length - 1][0] / 100 : null;
+        const bestNoBidP = obNoBids.length ? obNoBids[obNoBids.length - 1][0] / 100 : null;
+        const yesAskP = bestNoBidP != null ? 1 - bestNoBidP : null;
+        const spread = (bestYesBidP != null && yesAskP != null) ? yesAskP - bestYesBidP : null;
+        if (spread != null && spread > MOMENTUM_MAX_SPREAD) {
+          if (signalType) console.log(`[momentum-dbg] SKIP ${ticker}: spread too wide (${(spread*100).toFixed(0)}c)`);
+          continue;
+        }
+      }
 
       // D) Orderbook imbalance signal — strong directional bias from depth
       if (!signalType && !isTourney && yesBidDepth > 0 && noBidDepth > 0) {
