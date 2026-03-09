@@ -28,15 +28,36 @@ export function getKalshiClient() {
  * (everything before the last hyphenated suffix) and filter results by marketId.
  */
 export async function fetchKalshiMarket(ticker) {
-  // Try direct ticker lookup first
+  // Method 1: Direct REST API call (most reliable — exact ticker match)
+  try {
+    const resp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      const market = data.market;
+      if (market && market.ticker === ticker) {
+        // Wrap in pmxt-like format
+        return [{
+          marketId: market.ticker,
+          title: market.title,
+          outcomes: [
+            { label: 'Yes', price: market.yes_ask },
+            { label: 'No', price: market.no_ask },
+          ],
+          ...market,
+        }];
+      }
+    }
+  } catch (e) {
+    // REST call failed, fall through to pmxt
+  }
+
+  // Method 2: pmxt library (may return wrong market for some tickers)
   const direct = await kalshiClient.fetchMarkets({ ticker, limit: 1 });
   if (direct.length && direct[0].marketId === ticker) {
     return direct;
   }
 
-  // Ticker returned wrong market or nothing — try slug-based lookup
-  // Extract event slug: everything before the last dash-separated segment
-  // e.g., KXNEXTIRANLEADER-45JAN01-MKHA → KXNEXTIRANLEADER-45JAN01
+  // Method 3: Slug-based lookup for multi-outcome markets
   const lastDash = ticker.lastIndexOf('-');
   if (lastDash > 0) {
     const eventSlug = ticker.substring(0, lastDash);
