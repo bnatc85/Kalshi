@@ -978,7 +978,9 @@ async function scanSportsMomentum(liveTickerSet) {
 
       // A-00) Sportsbook edge — highest priority signal
       // Compares DraftKings/FanDuel implied probability to Kalshi market price
-      if (!signalType && isGameMarket && ODDS_API_KEY) {
+      // Only fetch odds for live games to conserve API quota (500 req/month free tier)
+      const gameIsLive = scoreCtx && scoreCtx.isLive;
+      if (!signalType && isGameMarket && ODDS_API_KEY && gameIsLive) {
         const teams = extractTeams(ticker);
         const sbProb = await getSportsbookProb(ticker, teams);
         if (!sbProb) {
