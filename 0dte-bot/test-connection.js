@@ -72,8 +72,21 @@ async function test() {
     // Show first few expirations
     for (const exp of chain.slice(0, 5)) {
       const date = exp['expiration-date'] || 'unknown';
-      const strikeCount = (exp['strike-prices'] || exp.strikes || []).length;
+      const strikeCount = (exp['strike-prices'] || exp.strikes || exp.expirations || []).length;
       console.log(chalk.gray(`       ${date} │ ${strikeCount} strikes`));
+    }
+
+    // Dump raw structure of first expiration for debugging
+    if (chain.length > 0) {
+      const sample = chain[0];
+      console.log(chalk.gray(`       Raw keys: ${Object.keys(sample).join(', ')}`));
+      // Show nested structure if present
+      for (const key of Object.keys(sample)) {
+        const val = sample[key];
+        if (Array.isArray(val)) {
+          console.log(chalk.gray(`       ${key}: Array[${val.length}]${val.length ? ' → keys: ' + Object.keys(val[0] || {}).join(', ') : ''}`));
+        }
+      }
     }
 
     // Check for 0DTE
