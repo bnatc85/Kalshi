@@ -1957,6 +1957,7 @@ async function getScoreContext(ticker) {
 // --- Sportsbook odds integration ---
 // Cache: sportKey -> { events: [...], fetchTime }
 const oddsCache = new Map();
+let oddsApiDisabledUntil = 0; // timestamp — disable API after 401 for 30 min
 
 /**
  * Fetch live moneyline odds from The Odds API for a given sport.
@@ -1965,6 +1966,9 @@ const oddsCache = new Map();
 async function fetchSportsbookOdds(sportKey) {
   if (!ODDS_API_KEY) return [];
 
+  // If API key is dead (401), don't retry for 30 minutes
+  if (Date.now() < oddsApiDisabledUntil) return oddsCache.get(sportKey)?.events || [];
+
   const cached = oddsCache.get(sportKey);
   if (cached && Date.now() - cached.fetchTime < ODDS_CACHE_MS) return cached.events;
 
@@ -1972,11 +1976,16 @@ async function fetchSportsbookOdds(sportKey) {
     const url = `${ODDS_API_BASE}/${sportKey}/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=decimal&bookmakers=draftkings,fanduel`;
     const resp = await fetch(url);
     if (!resp.ok) {
-      console.warn(`[odds] API error for ${sportKey}: ${resp.status}`);
-      // On rate limit or auth error, extend cache to avoid hammering
-      if (cached && (resp.status === 429 || resp.status === 401)) {
-        cached.fetchTime = Date.now(); // reset cache timer to avoid retrying
+      if (resp.status === 401) {
+        console.warn(`[odds] API key expired/invalid — disabling odds for 30 min`);
+        oddsApiDisabledUntil = Date.now() + 30 * 60 * 1000;
+      } else if (resp.status === 429) {
+        console.warn(`[odds] Rate limited — backing off 10 min`);
+        oddsApiDisabledUntil = Date.now() + 10 * 60 * 1000;
+      } else {
+        console.warn(`[odds] API error for ${sportKey}: ${resp.status}`);
       }
+      if (cached) cached.fetchTime = Date.now();
       return cached?.events || [];
     }
     const data = await resp.json();
