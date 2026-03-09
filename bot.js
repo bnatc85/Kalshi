@@ -155,43 +155,67 @@ const ODDS_SPORT_MAP = {
   KXMLS: 'soccer_usa_mls',
 };
 // Map 3-letter Kalshi/ESPN codes to The Odds API team names (partial match on city/name)
-const TEAM_ABBR_MAP = {
-  // NBA
-  ATL: 'Atlanta Hawks', BOS: 'Boston Celtics', BKN: 'Brooklyn Nets', CHA: 'Charlotte Hornets',
-  CHI: 'Chicago Bulls', CLE: 'Cleveland Cavaliers', DAL: 'Dallas Mavericks', DEN: 'Denver Nuggets',
-  DET: 'Detroit Pistons', GSW: 'Golden State Warriors', HOU: 'Houston Rockets', IND: 'Indiana Pacers',
-  LAC: 'LA Clippers', LAL: 'Los Angeles Lakers', MEM: 'Memphis Grizzlies', MIA: 'Miami Heat',
-  MIL: 'Milwaukee Bucks', MIN: 'Minnesota Timberwolves', NOP: 'New Orleans Pelicans', NYK: 'New York Knicks',
-  OKC: 'Oklahoma City Thunder', ORL: 'Orlando Magic', PHI: 'Philadelphia 76ers', PHX: 'Phoenix Suns',
-  POR: 'Portland Trail Blazers', SAC: 'Sacramento Kings', SAS: 'San Antonio Spurs', TOR: 'Toronto Raptors',
-  UTA: 'Utah Jazz', WAS: 'Washington Wizards',
-  // NHL
-  ANA: 'Anaheim Ducks', ARI: 'Arizona Coyotes', BUF: 'Buffalo Sabres', CGY: 'Calgary Flames',
-  CAR: 'Carolina Hurricanes', COL: 'Colorado Avalanche', CBJ: 'Columbus Blue Jackets',
-  EDM: 'Edmonton Oilers', FLA: 'Florida Panthers', MTL: 'Montreal Canadiens',
-  NSH: 'Nashville Predators', NJD: 'New Jersey Devils', NYI: 'New York Islanders', NYR: 'New York Rangers',
-  OTT: 'Ottawa Senators', PIT: 'Pittsburgh Penguins', SEA: 'Seattle Kraken', STL: 'St. Louis Blues',
-  TB: 'Tampa Bay Lightning', VAN: 'Vancouver Canucks', VGK: 'Vegas Golden Knights',
-  WPG: 'Winnipeg Jets', WSH: 'Washington Capitals', UTA: 'Utah Hockey Club',
-  // MLB
-  BAL: 'Baltimore Orioles', BOS: 'Boston Red Sox', NYY: 'New York Yankees', TB: 'Tampa Bay Rays',
-  TOR: 'Toronto Blue Jays', CWS: 'Chicago White Sox', CLE: 'Cleveland Guardians', DET: 'Detroit Tigers',
-  KC: 'Kansas City Royals', MIN: 'Minnesota Twins', HOU: 'Houston Astros', LAA: 'Los Angeles Angels',
-  OAK: 'Oakland Athletics', SEA: 'Seattle Mariners', TEX: 'Texas Rangers', ATL: 'Atlanta Braves',
-  MIA: 'Miami Marlins', NYM: 'New York Mets', PHI: 'Philadelphia Phillies', WAS: 'Washington Nationals',
-  CHC: 'Chicago Cubs', CIN: 'Cincinnati Reds', MIL: 'Milwaukee Brewers', PIT: 'Pittsburgh Pirates',
-  STL: 'St. Louis Cardinals', AZ: 'Arizona Diamondbacks', COL: 'Colorado Rockies',
-  LAD: 'Los Angeles Dodgers', SD: 'San Diego Padres', SF: 'San Francisco Giants',
-  // NFL
-  ARI: 'Arizona Cardinals', ATL: 'Atlanta Falcons', BAL: 'Baltimore Ravens', BUF: 'Buffalo Bills',
-  CAR: 'Carolina Panthers', CIN: 'Cincinnati Bengals', DAL: 'Dallas Cowboys',
-  DEN: 'Denver Broncos', GB: 'Green Bay Packers', IND: 'Indianapolis Colts',
-  JAX: 'Jacksonville Jaguars', KC: 'Kansas City Chiefs', LV: 'Las Vegas Raiders',
-  LAC: 'Los Angeles Chargers', LAR: 'Los Angeles Rams', MIA: 'Miami Dolphins',
-  NE: 'New England Patriots', NO: 'New Orleans Saints', NYG: 'New York Giants', NYJ: 'New York Jets',
-  PHI: 'Philadelphia Eagles', PIT: 'Pittsburgh Steelers', SF: 'San Francisco 49ers',
-  SEA: 'Seattle Seahawks', TB: 'Tampa Bay Buccaneers', TEN: 'Tennessee Titans', WAS: 'Washington Commanders',
+// Sport-specific team abbreviation maps (avoids duplicate key overwriting)
+const TEAM_ABBR_BY_SPORT = {
+  NBA: {
+    ATL: 'Atlanta Hawks', BOS: 'Boston Celtics', BKN: 'Brooklyn Nets', CHA: 'Charlotte Hornets',
+    CHI: 'Chicago Bulls', CLE: 'Cleveland Cavaliers', DAL: 'Dallas Mavericks', DEN: 'Denver Nuggets',
+    DET: 'Detroit Pistons', GSW: 'Golden State Warriors', HOU: 'Houston Rockets', IND: 'Indiana Pacers',
+    LAC: 'LA Clippers', LAL: 'Los Angeles Lakers', MEM: 'Memphis Grizzlies', MIA: 'Miami Heat',
+    MIL: 'Milwaukee Bucks', MIN: 'Minnesota Timberwolves', NOP: 'New Orleans Pelicans', NYK: 'New York Knicks',
+    OKC: 'Oklahoma City Thunder', ORL: 'Orlando Magic', PHI: 'Philadelphia 76ers', PHX: 'Phoenix Suns',
+    POR: 'Portland Trail Blazers', SAC: 'Sacramento Kings', SAS: 'San Antonio Spurs', TOR: 'Toronto Raptors',
+    UTA: 'Utah Jazz', WAS: 'Washington Wizards',
+  },
+  NHL: {
+    ANA: 'Anaheim Ducks', ARI: 'Arizona Coyotes', BUF: 'Buffalo Sabres', CGY: 'Calgary Flames',
+    CAR: 'Carolina Hurricanes', CHI: 'Chicago Blackhawks', COL: 'Colorado Avalanche', CBJ: 'Columbus Blue Jackets',
+    DAL: 'Dallas Stars', DET: 'Detroit Red Wings', EDM: 'Edmonton Oilers', FLA: 'Florida Panthers',
+    LA: 'Los Angeles Kings', MIN: 'Minnesota Wild', MTL: 'Montreal Canadiens',
+    NSH: 'Nashville Predators', NJD: 'New Jersey Devils', NYI: 'New York Islanders', NYR: 'New York Rangers',
+    OTT: 'Ottawa Senators', PHI: 'Philadelphia Flyers', PIT: 'Pittsburgh Penguins', SEA: 'Seattle Kraken',
+    SJ: 'San Jose Sharks', STL: 'St. Louis Blues',
+    TB: 'Tampa Bay Lightning', VAN: 'Vancouver Canucks', VGK: 'Vegas Golden Knights',
+    WPG: 'Winnipeg Jets', WSH: 'Washington Capitals', UTA: 'Utah Hockey Club',
+  },
+  MLB: {
+    BAL: 'Baltimore Orioles', BOS: 'Boston Red Sox', NYY: 'New York Yankees', TB: 'Tampa Bay Rays',
+    TOR: 'Toronto Blue Jays', CWS: 'Chicago White Sox', CLE: 'Cleveland Guardians', DET: 'Detroit Tigers',
+    KC: 'Kansas City Royals', MIN: 'Minnesota Twins', HOU: 'Houston Astros', LAA: 'Los Angeles Angels',
+    OAK: 'Oakland Athletics', SEA: 'Seattle Mariners', TEX: 'Texas Rangers', ATL: 'Atlanta Braves',
+    MIA: 'Miami Marlins', NYM: 'New York Mets', PHI: 'Philadelphia Phillies', WAS: 'Washington Nationals',
+    CHC: 'Chicago Cubs', CIN: 'Cincinnati Reds', MIL: 'Milwaukee Brewers', PIT: 'Pittsburgh Pirates',
+    STL: 'St. Louis Cardinals', AZ: 'Arizona Diamondbacks', COL: 'Colorado Rockies',
+    LAD: 'Los Angeles Dodgers', SD: 'San Diego Padres', SF: 'San Francisco Giants',
+  },
+  NFL: {
+    ARI: 'Arizona Cardinals', ATL: 'Atlanta Falcons', BAL: 'Baltimore Ravens', BUF: 'Buffalo Bills',
+    CAR: 'Carolina Panthers', CHI: 'Chicago Bears', CIN: 'Cincinnati Bengals', CLE: 'Cleveland Browns',
+    DAL: 'Dallas Cowboys', DEN: 'Denver Broncos', DET: 'Detroit Lions', GB: 'Green Bay Packers',
+    HOU: 'Houston Texans', IND: 'Indianapolis Colts', JAX: 'Jacksonville Jaguars', KC: 'Kansas City Chiefs',
+    LV: 'Las Vegas Raiders', LAC: 'Los Angeles Chargers', LAR: 'Los Angeles Rams', MIA: 'Miami Dolphins',
+    MIN: 'Minnesota Vikings', NE: 'New England Patriots', NO: 'New Orleans Saints',
+    NYG: 'New York Giants', NYJ: 'New York Jets', PHI: 'Philadelphia Eagles', PIT: 'Pittsburgh Steelers',
+    SF: 'San Francisco 49ers', SEA: 'Seattle Seahawks', TB: 'Tampa Bay Buccaneers',
+    TEN: 'Tennessee Titans', WAS: 'Washington Commanders',
+  },
+  MLS: {
+    ATL: 'Atlanta United', AUS: 'Austin FC', CHI: 'Chicago Fire', CIN: 'FC Cincinnati',
+    CLT: 'Charlotte FC', COL: 'Colorado Rapids', CLB: 'Columbus Crew', DAL: 'FC Dallas',
+    DC: 'D.C. United', HOU: 'Houston Dynamo', LA: 'LA Galaxy', LAFC: 'Los Angeles FC',
+    MIA: 'Inter Miami', MIN: 'Minnesota United', MTL: 'CF Montreal', NSH: 'Nashville SC',
+    NE: 'New England Revolution', NYC: 'New York City FC', NYRB: 'New York Red Bulls',
+    ORL: 'Orlando City', PHI: 'Philadelphia Union', POR: 'Portland Timbers',
+    RSL: 'Real Salt Lake', SJ: 'San Jose Earthquakes', SEA: 'Seattle Sounders',
+    SKC: 'Sporting Kansas City', STL: 'St. Louis City SC', TOR: 'Toronto FC', VAN: 'Vancouver Whitecaps',
+  },
 };
+
+// Flat map for backward compatibility (last sport wins, but sport-aware lookup is preferred)
+const TEAM_ABBR_MAP = {};
+for (const sport of Object.values(TEAM_ABBR_BY_SPORT)) {
+  Object.assign(TEAM_ABBR_MAP, sport);
+}
 
 // Live scores — ESPN API for score validation
 const SCORE_API_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
@@ -2011,14 +2035,23 @@ async function fetchSportsbookOdds(sportKey) {
  * Build reverse lookup: team abbreviation -> full team name used by The Odds API.
  * Since TEAM_ABBR_MAP has duplicates across sports, we match contextually.
  */
-function findOddsTeamName(abbr, oddsEvents) {
-  // First try direct map lookup
+function findOddsTeamName(abbr, oddsEvents, sport = null) {
+  // First try sport-specific map (avoids cross-sport collisions like TB, DET, etc.)
+  if (sport && TEAM_ABBR_BY_SPORT[sport]) {
+    const mapped = TEAM_ABBR_BY_SPORT[sport][abbr];
+    if (mapped) {
+      for (const ev of oddsEvents) {
+        if (ev.homeTeam === mapped || ev.awayTeam === mapped) return mapped;
+        if (ev.teamProbs[mapped] != null) return mapped;
+      }
+    }
+  }
+
+  // Fallback: try flat map
   const mapped = TEAM_ABBR_MAP[abbr];
   if (mapped) {
-    // Check if this team name appears in any event
     for (const ev of oddsEvents) {
       if (ev.homeTeam === mapped || ev.awayTeam === mapped) return mapped;
-      // Also check if any teamProbs key matches
       if (ev.teamProbs[mapped] != null) return mapped;
     }
   }
@@ -2026,7 +2059,6 @@ function findOddsTeamName(abbr, oddsEvents) {
   // Fuzzy fallback: try matching abbreviation as substring of team name
   for (const ev of oddsEvents) {
     for (const teamName of [ev.homeTeam, ev.awayTeam]) {
-      // Extract city abbreviation from team name
       const words = teamName.split(' ');
       const cityAbbr = words[0].substring(0, 3).toUpperCase();
       if (cityAbbr === abbr) return teamName;
@@ -2056,8 +2088,9 @@ async function getSportsbookProb(ticker, teams) {
   const events = await fetchSportsbookOdds(sportKey);
   if (!events.length) return null;
 
-  // Find the team name in odds data
-  const teamName = findOddsTeamName(tickerTeam, events);
+  // Find the team name in odds data (sport-aware to avoid cross-sport collisions)
+  const sport = sportMatch[1]; // NBA, NHL, MLB, etc.
+  const teamName = findOddsTeamName(tickerTeam, events, sport);
   if (!teamName) return null;
 
   // Find the event containing this team
