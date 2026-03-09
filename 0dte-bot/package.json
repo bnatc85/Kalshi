@@ -1,0 +1,19 @@
+{
+  "name": "0dte-bot",
+  "version": "1.0.0",
+  "description": "0DTE SPY credit spread bot via Tastytrade",
+  "type": "module",
+  "scripts": {
+    "start": "DRY_RUN=false node index.js",
+    "dry": "DRY_RUN=true node index.js",
+    "test-connection": "node test-connection.js",
+    "scan": "node scan.js"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "dotenv": "^16.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
