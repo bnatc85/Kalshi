@@ -145,7 +145,7 @@ const WIN_PROB_STRONG_EDGE = 0.20;     // 20c+ = strong signal, allow bigger siz
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '';
 console.log(`[config] ODDS_API_KEY: ${ODDS_API_KEY ? 'set (' + ODDS_API_KEY.substring(0, 8) + '...)' : 'EMPTY'}`);
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports';
-const ODDS_CACHE_MS = 3 * 60 * 1000;  // cache odds for 3 minutes (save API calls)
+const ODDS_CACHE_MS = 10 * 60 * 1000;  // cache odds for 10 minutes (save API calls — free tier is 500 req/month)
 const ODDS_MIN_EDGE = 0.08;           // 8c+ edge vs sportsbook implied prob
 const ODDS_SPORT_MAP = {
   KXNBA: 'basketball_nba',
@@ -1938,6 +1938,10 @@ async function fetchSportsbookOdds(sportKey) {
     const resp = await fetch(url);
     if (!resp.ok) {
       console.warn(`[odds] API error for ${sportKey}: ${resp.status}`);
+      // On rate limit or auth error, extend cache to avoid hammering
+      if (cached && (resp.status === 429 || resp.status === 401)) {
+        cached.fetchTime = Date.now(); // reset cache timer to avoid retrying
+      }
       return cached?.events || [];
     }
     const data = await resp.json();
