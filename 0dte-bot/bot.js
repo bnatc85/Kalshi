@@ -202,15 +202,21 @@ async function pollCycle() {
   }
 
   // ── Stage 6: Generate entry signals ──
-  const signals = generateSignals(spotPrice, exp0DTE, openTrades);
+  // Only count today's open trades toward max positions
+  const todayOpen = openTrades.filter(t => t.expiration === getETTime().dateStr);
+  const signals = generateSignals(spotPrice, exp0DTE, todayOpen);
 
-  if (!signals.length) {
+  // Filter out signals for spread types we already have open today
+  const openTypes = new Set(todayOpen.map(t => t.side));
+  const filteredSignals = signals.filter(s => !openTypes.has(s.side));
+
+  if (!filteredSignals.length) {
     const bias = getMarketBias();
     const vol = getIntradayVolatility();
     console.log(chalk.gray(`  [signals] No entries │ bias: ${bias} │ vol: ${vol}`));
   }
 
-  for (const signal of signals) {
+  for (const signal of filteredSignals) {
     console.log(chalk.magenta(`  [signal] ${signal.side}: sell ${signal.shortStrike} / buy ${signal.longStrike} │ ~$${signal.estimatedCredit.toFixed(2)} credit │ ${signal.reason}`));
 
     // Position size: how many spreads can we afford?

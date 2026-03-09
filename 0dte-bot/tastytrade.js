@@ -143,7 +143,7 @@ export async function placeCreditSpread({ type, shortStrike, longStrike, expirat
   const order = {
     'time-in-force': 'Day',
     'order-type': 'Limit',
-    'price': creditLimit,  // credit received (positive = credit)
+    'price': Math.floor(creditLimit * 100) / 100,  // round down to nearest cent
     'price-effect': 'Credit',
     legs: [
       {
@@ -182,7 +182,7 @@ export async function closeCreditSpread({ type, shortStrike, longStrike, expirat
   const order = {
     'time-in-force': 'Day',
     'order-type': 'Limit',
-    'price': debitLimit,
+    'price': Math.ceil(debitLimit * 100) / 100,  // round up to nearest cent
     'price-effect': 'Debit',
     legs: [
       {
