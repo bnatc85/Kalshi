@@ -73,6 +73,43 @@ export async function getQuote(symbol) {
 }
 
 /**
+ * Fetch real-time SPY price from Yahoo Finance (free, no auth)
+ */
+export async function getSpotPriceYahoo(symbol = 'SPY') {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': '0dte-bot/1.0' },
+    });
+    if (!res.ok) throw new Error(`Yahoo ${res.status}`);
+    const data = await res.json();
+    const meta = data.chart?.result?.[0]?.meta;
+    if (meta?.regularMarketPrice) {
+      return parseFloat(meta.regularMarketPrice);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch spot price from Finnhub (free tier, 60 calls/min)
+ */
+export async function getSpotPriceFinnhub(symbol = 'SPY') {
+  try {
+    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=free`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.c && data.c > 0) return parseFloat(data.c); // current price
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Flatten the nested chain into a list of expirations with strikes
  * Tastytrade returns: chain[0].expirations[].strikes[]
  */

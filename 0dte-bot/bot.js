@@ -25,7 +25,18 @@ import {
   getOrders,
   parseOCC,
   getQuote,
+  getSpotPriceYahoo,
+  getSpotPriceFinnhub,
 } from './tastytrade.js';
+
+// Tastytrade fee schedule
+const FEES = {
+  openPerContract: 1.00,       // $1/contract to open
+  closePerContract: 0.00,      // $0/contract to close
+  openCapPerLeg: 10.00,        // capped at $10/leg
+  exchangeClearingPerContract: 0.05, // ~$0.03-0.06 exchange + clearing + regulatory
+  assignmentPerLeg: 5.00,      // $5 flat per leg if assigned
+};
 import {
   recordPrice,
   generateSignals,
@@ -175,11 +186,15 @@ async function pollCycle() {
         signal.trade.status = 'closed';
         signal.trade.closeTime = new Date().toISOString();
         signal.trade.closeCost = signal.debitLimit;
-        signal.trade.pnl = (signal.trade.creditReceived - signal.debitLimit) * signal.trade.quantity * 100;
+        const closeFees = calculateCloseFees(signal.trade.quantity);
+        signal.trade.closeFees = closeFees;
+        const grossPnl = (signal.trade.creditReceived - signal.debitLimit) * signal.trade.quantity * 100;
+        const totalFees = (signal.trade.openFees || 0) + closeFees;
+        signal.trade.pnl = grossPnl - totalFees;
         const pnlStr = signal.trade.pnl >= 0
           ? chalk.green(`+$${signal.trade.pnl.toFixed(2)}`)
           : chalk.red(`-$${Math.abs(signal.trade.pnl).toFixed(2)}`);
-        console.log(chalk.green(`  [exit] Closed ${signal.trade.side} @ $${signal.debitLimit.toFixed(2)} │ PnL: ${pnlStr}`));
+        console.log(chalk.green(`  [exit] Closed ${signal.trade.side} @ $${signal.debitLimit.toFixed(2)} │ Fees: $${totalFees.toFixed(2)} │ PnL: ${pnlStr}`));
         if (result.dryRun) console.log(chalk.gray('    (dry run)'));
         saveTrades();
       } catch (err) {
@@ -217,11 +232,20 @@ async function pollCycle() {
   }
 
   for (const signal of filteredSignals) {
-    console.log(chalk.magenta(`  [signal] ${signal.side}: sell ${signal.shortStrike} / buy ${signal.longStrike} │ ~$${signal.estimatedCredit.toFixed(2)} credit │ ${signal.reason}`));
-
-    // Position size: how many spreads can we afford?
+    // Calculate fees for entry (2 legs: short + long)
     const maxRisk = config.spreadWidth * 100; // $1 spread = $100 max risk per contract
     const quantity = Math.max(1, Math.floor(config.positionSizeUSD / maxRisk));
+    const openFees = calculateOpenFees(quantity);
+    const grossCredit = signal.estimatedCredit * quantity * 100;
+    const netCredit = grossCredit - openFees;
+
+    // Skip if fees eat more than 50% of the credit
+    if (netCredit < grossCredit * 0.5) {
+      console.log(chalk.yellow(`  [skip] ${signal.side}: $${grossCredit.toFixed(0)} credit - $${openFees.toFixed(2)} fees = $${netCredit.toFixed(2)} net (too thin)`));
+      continue;
+    }
+
+    console.log(chalk.magenta(`  [signal] ${signal.side}: sell ${signal.shortStrike} / buy ${signal.longStrike} │ ~$${signal.estimatedCredit.toFixed(2)} credit │ ${signal.reason}`));
 
     try {
       const result = await placeCreditSpread({
@@ -242,6 +266,7 @@ async function pollCycle() {
         expiration: expirationDate,
         quantity,
         creditReceived: signal.estimatedCredit,
+        openFees,
         entryTime: new Date().toISOString(),
         status: 'open',
         reason: signal.reason,
@@ -250,8 +275,9 @@ async function pollCycle() {
       saveTrades();
 
       const riskStr = `$${(quantity * maxRisk).toFixed(0)} risk`;
-      const creditStr = `$${(signal.estimatedCredit * quantity * 100).toFixed(0)} credit`;
-      console.log(chalk.green(`  [entry] ${signal.side} x${quantity} │ ${creditStr} │ ${riskStr}`));
+      const creditStr = `$${grossCredit.toFixed(0)} credit`;
+      const feeStr = `$${openFees.toFixed(2)} fees`;
+      console.log(chalk.green(`  [entry] ${signal.side} x${quantity} │ ${creditStr} - ${feeStr} = $${netCredit.toFixed(2)} net │ ${riskStr}`));
       if (result.dryRun) console.log(chalk.gray('    (dry run)'));
     } catch (err) {
       console.log(chalk.red(`  [entry] Order error: ${err.message}`));
@@ -276,34 +302,45 @@ async function pollCycle() {
 // ── Helpers ──────────────────────────────────────────────────
 
 async function fetchSpotPrice(chain, balance) {
-  // Method 1: Try chain's underlying price
+  // Method 1: Yahoo Finance (real-time, free, no auth)
+  const yahoo = await getSpotPriceYahoo(config.symbol);
+  if (yahoo) {
+    console.log(chalk.gray(`  [price] Source: Yahoo Finance`));
+    return yahoo;
+  }
+
+  // Method 2: Finnhub (real-time, free tier)
+  const finnhub = await getSpotPriceFinnhub(config.symbol);
+  if (finnhub) {
+    console.log(chalk.gray(`  [price] Source: Finnhub`));
+    return finnhub;
+  }
+
+  // Method 3: Tastytrade chain's underlying price
   if (chain && chain.length) {
     for (const root of chain) {
-      if (root['underlying-price']) return parseFloat(root['underlying-price']);
+      if (root['underlying-price']) {
+        console.log(chalk.gray(`  [price] Source: TT chain`));
+        return parseFloat(root['underlying-price']);
+      }
     }
   }
 
-  // Method 2: Try from balance
-  if (balance && balance['underlying-price']) return parseFloat(balance['underlying-price']);
-
-  // Method 3: Try the quote endpoint
+  // Method 4: Tastytrade quote endpoint
   try {
     const quote = await getQuote(config.symbol);
     if (quote && (quote.last || quote['last-price'])) {
+      console.log(chalk.gray(`  [price] Source: TT quote`));
       return parseFloat(quote.last || quote['last-price']);
     }
-    if (quote && quote.bid && quote.ask) {
-      return (parseFloat(quote.bid) + parseFloat(quote.ask)) / 2;
-    }
-  } catch (e) {
-    // Quote endpoint may not be available in sandbox
-  }
+  } catch (e) {}
 
-  // Method 4: Derive from chain — midpoint of strikes as rough estimate
+  // Method 5: Chain midpoint (last resort, inaccurate)
   const expirations = flattenChain(chain);
   if (expirations.length) {
     const strikes = expirations[0].strikes.map(s => s.strikePrice).sort((a, b) => a - b);
     if (strikes.length) {
+      console.log(chalk.yellow(`  [price] Source: chain midpoint (inaccurate!)`));
       return strikes[Math.floor(strikes.length / 2)];
     }
   }
@@ -338,6 +375,29 @@ function getTimeDecayFactor() {
   const minutesToClose = (16 - hour) * 60 - minute;
   const totalMinutes = 6.5 * 60; // market hours
   return Math.max(0.1, minutesToClose / totalMinutes);
+}
+
+// ── Fee Calculations ────────────────────────────────────────
+
+/**
+ * Calculate fees to open a credit spread (2 legs)
+ * Tastytrade: $1/contract to open, capped at $10/leg, plus exchange fees
+ */
+function calculateOpenFees(quantity) {
+  const perLeg = Math.min(quantity * FEES.openPerContract, FEES.openCapPerLeg);
+  const commissions = perLeg * 2; // 2 legs
+  const exchange = quantity * 2 * FEES.exchangeClearingPerContract; // both legs
+  return commissions + exchange;
+}
+
+/**
+ * Calculate fees to close a credit spread (2 legs)
+ * Tastytrade: $0/contract to close, but exchange fees still apply
+ */
+function calculateCloseFees(quantity) {
+  const commissions = 0; // free to close
+  const exchange = quantity * 2 * FEES.exchangeClearingPerContract;
+  return commissions + exchange;
 }
 
 // ── Boot ────────────────────────────────────────────────────
