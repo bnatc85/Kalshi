@@ -24,6 +24,7 @@ import {
   closeCreditSpread,
   getOrders,
   parseOCC,
+  getQuote,
 } from './tastytrade.js';
 import {
   recordPrice,
@@ -121,7 +122,7 @@ async function pollCycle() {
     console.log(chalk.cyan(`  [balance] Cash: $${cashBalance.toFixed(2)}`));
 
     // Get spot price — try multiple sources
-    spotPrice = extractSpotPrice(chain, balance);
+    spotPrice = await fetchSpotPrice(chain, balance);
     if (spotPrice) {
       console.log(chalk.cyan(`  [data] SPY: $${spotPrice.toFixed(2)}`));
       recordPrice(spotPrice);
@@ -266,15 +267,39 @@ async function pollCycle() {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function extractSpotPrice(chain, balance) {
-  // Try to get from chain's underlying price
+async function fetchSpotPrice(chain, balance) {
+  // Method 1: Try chain's underlying price
   if (chain && chain.length) {
-    for (const exp of chain) {
-      if (exp['underlying-price']) return parseFloat(exp['underlying-price']);
+    for (const root of chain) {
+      if (root['underlying-price']) return parseFloat(root['underlying-price']);
     }
   }
-  // Fallback: try from balance
+
+  // Method 2: Try from balance
   if (balance && balance['underlying-price']) return parseFloat(balance['underlying-price']);
+
+  // Method 3: Try the quote endpoint
+  try {
+    const quote = await getQuote(config.symbol);
+    if (quote && (quote.last || quote['last-price'])) {
+      return parseFloat(quote.last || quote['last-price']);
+    }
+    if (quote && quote.bid && quote.ask) {
+      return (parseFloat(quote.bid) + parseFloat(quote.ask)) / 2;
+    }
+  } catch (e) {
+    // Quote endpoint may not be available in sandbox
+  }
+
+  // Method 4: Derive from chain — midpoint of strikes as rough estimate
+  const expirations = flattenChain(chain);
+  if (expirations.length) {
+    const strikes = expirations[0].strikes.map(s => s.strikePrice).sort((a, b) => a - b);
+    if (strikes.length) {
+      return strikes[Math.floor(strikes.length / 2)];
+    }
+  }
+
   return null;
 }
 
