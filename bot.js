@@ -553,7 +553,7 @@ async function poll() {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= 95c (near-certain)`;
       } else if (bestBid >= minSellPrice) {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
-      } else if (!isGameTicker && entry != null && entry - bestBid >= AUTOSELL_STOP_LOSS) {
+      } else if (!isGameTicker && entry != null && bestBid < 0.20 && entry - bestBid >= AUTOSELL_STOP_LOSS) {
         sellReason = `${C.loss}STOP-LOSS: down ${((entry - bestBid)*100).toFixed(0)}c (entry ${(entry*100).toFixed(0)}c, bid ${(bestBid*100).toFixed(0)}c)${C.sell}`;
       } else if (isGameTicker && !isAccidentalPosition && entry != null && entry - bestBid >= 0.30) {
         // Game market emergency stop: cut losses at 30c down to avoid total wipeouts
@@ -868,7 +868,7 @@ async function scanSportsMomentum(liveTickerSet) {
       const isGameTkr = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker);
       const isHedged = mp.hedged || false; // hedged positions ride to settlement safely
       let exitReason = null;
-      if (!isHedged && curPrice <= mp.entryPrice - stopLoss) {
+      if (!isHedged && curPrice < 0.20 && curPrice <= mp.entryPrice - stopLoss) {
         exitReason = `STOP-LOSS (${(curPrice*100).toFixed(0)}c, entry ${(mp.entryPrice*100).toFixed(0)}c)`;
       } else if (!isHedged && curPrice <= mp.highestSeen - trailingStop) {
         exitReason = `TRAILING-STOP (${(curPrice*100).toFixed(0)}c, peak ${(mp.highestSeen*100).toFixed(0)}c)`;
