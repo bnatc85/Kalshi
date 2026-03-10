@@ -1460,6 +1460,10 @@ async function scanSportsMomentum(liveTickerSet) {
  *    - NFL: leading by 17+ in 4Q, or 10+ with <2min left
  *    - MLB: leading by 5+ in 8th+, or 4+ in 9th+
  */
+// Per-game snipe tracking: prevent buying both sides and cap total exposure
+if (!scanSettlementSnipes._snipedGames) scanSettlementSnipes._snipedGames = new Map(); // gameKey -> {side, count}
+const SNIPE_MAX_PER_GAME = 20; // max total contracts sniped per game (2 cycles of 10)
+
 async function scanSettlementSnipes(liveTickerSet) {
   try {
     const now = Date.now();
@@ -1514,7 +1518,7 @@ async function scanSettlementSnipes(liveTickerSet) {
           if (sport === 'basketball' || sport === 'NBA' || sport === 'nba') return p >= 4 && diff >= 10;
           if (sport === 'hockey' || sport === 'NHL' || sport === 'nhl' || sport === 'icehockey') return p >= 3 && diff >= 2;
           if (sport === 'football' || sport === 'NFL' || sport === 'nfl') return p >= 4 && diff >= 10;
-          if (sport === 'baseball' || sport === 'MLB' || sport === 'mlb') return p >= 7 && diff >= 3;
+          if (sport === 'baseball' || sport === 'MLB' || sport === 'mlb') return p >= 9 && diff >= 4;
           return diff >= 5;
         })();
 
@@ -1564,8 +1568,8 @@ async function scanSettlementSnipes(liveTickerSet) {
             // NFL: 17+ in 4Q, or 10+ with <2min
             isNearCertain = period >= 4 && (absDiff >= 17 || (absDiff >= 10 && clockMin <= 2));
           } else if (sport === 'baseball' || sport === 'MLB' || sport === 'mlb') {
-            // MLB: 5+ in 8th+, or 4+ in 9th+
-            isNearCertain = (period >= 8 && absDiff >= 5) || (period >= 9 && absDiff >= 4);
+            // MLB: 6+ in 9th+, or 5+ in 9th with <3 outs left (conservative — baseball comebacks are real)
+            isNearCertain = (period >= 9 && absDiff >= 6) || (period >= 9 && absDiff >= 5 && clockMin <= 3);
           }
 
           if (isNearCertain) {
@@ -1608,6 +1612,28 @@ async function scanSettlementSnipes(liveTickerSet) {
 
       if (!snipeSide) continue;
 
+      // --- Per-game snipe guard: never buy both sides, cap total exposure ---
+      // Strip last segment (team suffix) to get game key, same as momentum scanner
+      const snipeGameKey = /^KX(NBA|NHL|MLB|MLS|NFL)/.test(ticker)
+        ? ticker.substring(0, ticker.lastIndexOf('-'))
+        : ticker;
+      const priorSnipe = scanSettlementSnipes._snipedGames.get(snipeGameKey);
+      if (priorSnipe) {
+        if (priorSnipe.side !== snipeSide) {
+          console.log(`[snipe] SKIP ${ticker}: already sniped ${priorSnipe.side.toUpperCase()} on this game (won't buy both sides)`);
+          continue;
+        }
+        if (priorSnipe.count >= SNIPE_MAX_PER_GAME) {
+          console.log(`[snipe] SKIP ${ticker}: hit ${SNIPE_MAX_PER_GAME}-contract cap for this game (have ${priorSnipe.count})`);
+          continue;
+        }
+      }
+      // Also respect momentum scanner's session dedup
+      if (sessionBoughtGames.has(snipeGameKey)) {
+        console.log(`[snipe] SKIP ${ticker}: momentum scanner already traded this game`);
+        continue;
+      }
+
       const title = (m.title || m.subtitle || ticker).substring(0, 50);
       console.log(`[snipe] >> ${snipeMode} ${title} | ${ticker} | ${snipeSide.toUpperCase()} @ ${snipePrice}c`);
 
@@ -1629,6 +1655,10 @@ async function scanSettlementSnipes(liveTickerSet) {
         liveTickerSet.add(ticker);
         if (filled > 0) {
           recordTrade(ticker, snipeSide, snipePrice / 100, snipePrice / 100, filled);
+          // Track per-game snipe count and side
+          const prev = scanSettlementSnipes._snipedGames.get(snipeGameKey) || { side: snipeSide, count: 0 };
+          prev.count += filled;
+          scanSettlementSnipes._snipedGames.set(snipeGameKey, prev);
           snipes++;
         }
       } catch (e) {
