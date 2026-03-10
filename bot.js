@@ -71,6 +71,10 @@ const priceHistory = new Map();
 // Active momentum positions: ticker -> {entryPrice, highestSeen, entryTime}
 const momentumPositions = new Map();
 
+// Session-level dedup: once we've traded a game session, don't re-enter it
+// This prevents the churn of entering/hedging/exiting/re-entering the same game
+const sessionBoughtGames = new Set();
+
 // Entry signals — in-game sports
 const MOMENTUM_MIN_MOVE = 0.05;        // 5c momentum move required
 const MOMENTUM_WINDOW_MS = 5 * 60 * 1000; // momentum: within 5 minutes
@@ -255,7 +259,7 @@ export async function startBot() {
   console.log(`Sports:         ${sportsList}`);
   console.log(`Signals:        BOOK-EDGE (${(ODDS_MIN_EDGE*100).toFixed(0)}c) | WIN-PROB (${(WIN_PROB_MIN_EDGE*100).toFixed(0)}c) | MOMENTUM | FADE | REVERSION | OB-IMBAL | VOL-SPIKE`);
   console.log(`Sniper:         OB (${(SNIPE_MIN_BID*100).toFixed(0)}c+) | Score-based (${SCORE_SNIPE_MIN_PRICE}-${SCORE_SNIPE_MAX_PRICE}c)`);
-  console.log(`Auto-hedge:     ON (min ${(3).toFixed(0)}c net after ${(TAKER_FEE_CENTS*2).toFixed(1)}c fees)`);
+  console.log(`Auto-hedge:     ON (min ${(5).toFixed(0)}c net after ${(TAKER_FEE_CENTS*2).toFixed(1)}c fees)`);
   console.log(`Sizing:         ${MOMENTUM_SIZE_TIERS.map(([v,c]) => `${v}+vol=${c}x`).join(', ')} | 2x for BOOK-EDGE/WIN-PROB`);
   console.log(`Exits:          TP@90c | SL@${(MOMENTUM_STOP_LOSS*100).toFixed(0)}c | Trail@${(MOMENTUM_TRAILING_STOP*100).toFixed(0)}c`);
   console.log(`Filters:        spread<${(MOMENTUM_MAX_SPREAD*100).toFixed(0)}c | vol>${MOMENTUM_MIN_VOLUME} | depth>${MOMENTUM_MIN_BID_DEPTH} | live games only`);
@@ -551,6 +555,10 @@ async function poll() {
         sellReason = `bid ${(bestBid*100).toFixed(0)}c >= min ${(minSellPrice*100).toFixed(0)}c`;
       } else if (!isGameTicker && entry != null && entry - bestBid >= AUTOSELL_STOP_LOSS) {
         sellReason = `${C.loss}STOP-LOSS: down ${((entry - bestBid)*100).toFixed(0)}c (entry ${(entry*100).toFixed(0)}c, bid ${(bestBid*100).toFixed(0)}c)${C.sell}`;
+      } else if (isGameTicker && !isAccidentalPosition && entry != null && entry - bestBid >= 0.30) {
+        // Game market emergency stop: cut losses at 30c down to avoid total wipeouts
+        // (PHI Flyers 43c→1c, NYY 44c→1c were preventable)
+        sellReason = `${C.loss}GAME-STOP: down ${((entry - bestBid)*100).toFixed(0)}c (entry ${(entry*100).toFixed(0)}c, bid ${(bestBid*100).toFixed(0)}c)${C.sell}`;
       }
       if (!sellReason) continue;
 
@@ -957,7 +965,8 @@ async function scanSportsMomentum(liveTickerSet) {
       heldGames.add(gs);
       gameSessionCount.set(gs, (gameSessionCount.get(gs) || 0) + 1);
     }
-    const boughtGames = new Set();
+    // Use session-level dedup (sessionBoughtGames) instead of per-cycle set
+    // to prevent re-entering the same game after exiting a hedged position
 
     for (const m of markets) {
       const ticker = m.ticker;
@@ -1103,7 +1112,7 @@ async function scanSportsMomentum(liveTickerSet) {
       // --- Filters (before orderbook fetch to save API calls) ---
       // Skip if we already hold this ticker or hit the per-game/player cap
       const gs = gameSession(ticker);
-      if (liveTickerSet.has(ticker) || boughtGames.has(gs)) {
+      if (liveTickerSet.has(ticker) || sessionBoughtGames.has(gs)) {
         if (isGameMarket && signalType) console.log(`[momentum-dbg] ${ticker} ${signalType} blocked: already held/bought`);
         continue;
       }
@@ -1267,8 +1276,8 @@ async function scanSportsMomentum(liveTickerSet) {
           ? Math.round((1 - yesPrice) * 100)
           : Math.round(yesPrice * 100);
         const estCombined = hedgeAskCheck != null ? estLimitPrice + hedgeAskCheck : null;
-        if (estCombined == null || estCombined > 95) {
-          console.log(`[momentum] SKIP ${ticker} ${signalType}: weak signal + no hedge available (est combined=${estCombined || '?'}c)`);
+        if (estCombined == null || estCombined > 93) {
+          console.log(`[momentum] SKIP ${ticker} ${signalType}: weak signal + no hedge available (est combined=${estCombined || '?'}c, need ≤93)`);
           continue;
         }
       }
@@ -1342,7 +1351,7 @@ async function scanSportsMomentum(liveTickerSet) {
         console.log(`${C.buy}[momentum]    BOUGHT ${filled}/${contractCount} ${tradeSide.toUpperCase()} @ ${limitPrice}c${C.reset}`);
         // Always mark game as bought to prevent buying the other side,
         // even if fill_count is 0 (limit orders can fill moments later)
-        boughtGames.add(gs);
+        sessionBoughtGames.add(gs);
         liveTickerSet.add(ticker);
         heldGames.add(gs);
         gameSessionCount.set(gs, (gameSessionCount.get(gs) || 0) + 1);
@@ -1371,8 +1380,8 @@ async function scanSportsMomentum(liveTickerSet) {
           const combinedCost = hedgeAsk != null ? limitPrice + hedgeAsk : null;
           const totalFees = 2 * TAKER_FEE_CENTS; // fee on both legs
           const netProfit = combinedCost != null ? 100 - combinedCost - totalFees : null;
-          if (netProfit != null && netProfit >= 3) {
-            // At least 3c net profit after fees — worth hedging
+          if (netProfit != null && netProfit >= 5) {
+            // At least 5c net profit after fees — 3c was too thin and got eaten by slippage
             const netProfitTotal = (netProfit * filled / 100).toFixed(2);
             console.log(`[hedge] >> ${ticker} | ${hedgeSide.toUpperCase()} @ ${hedgeAsk}c | combined=${combinedCost}c + ${totalFees.toFixed(1)}c fees | net profit=$${netProfitTotal} on ${filled} contracts`);
             if (!config.dryRun) {
@@ -1400,7 +1409,7 @@ async function scanSportsMomentum(liveTickerSet) {
               console.log(`[hedge]    DRY RUN: would hedge ${filled} ${hedgeSide.toUpperCase()} @ ${hedgeAsk}c | net profit=$${netProfitTotal}`);
             }
           } else if (combinedCost != null) {
-            console.log(`[hedge] ${ticker}: no arb — combined=${combinedCost}c + ${totalFees.toFixed(1)}c fees = ${(combinedCost + totalFees).toFixed(1)}c (need <97c)`);
+            console.log(`[hedge] ${ticker}: no arb — combined=${combinedCost}c + ${totalFees.toFixed(1)}c fees = ${(combinedCost + totalFees).toFixed(1)}c (need <95c)`);
           }
         }
       } catch (e) {
